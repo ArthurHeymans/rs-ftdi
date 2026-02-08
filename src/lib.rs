@@ -23,23 +23,31 @@
 //! - **Serial I/O**: Baud rate, line properties, flow control, modem lines.
 //! - **Bitbang / MPSSE**: Asynchronous and synchronous bitbang, MPSSE for
 //!   SPI/I2C/JTAG.
-//! - **EEPROM**: Read, write, erase, decode, and build EEPROM images.
+//! - **High-level MPSSE**: SPI master and I2C master with typed APIs
+//!   ([`mpsse::spi`], [`mpsse::i2c`]).
+//! - **Async transfers**: Submit non-blocking USB reads/writes and wait
+//!   for completion later ([`async_transfer`]).
+//! - **EEPROM**: Read, write, erase, decode, and build EEPROM images with
+//!   chip-aware defaults.
 //! - **Streaming**: High-throughput continuous reads via concurrent USB
 //!   transfers (FT2232H / FT232H).
 //! - **`Read` / `Write` traits**: Use `FtdiDevice` anywhere `std::io::Read`
 //!   or `std::io::Write` is expected.
 
+pub mod async_transfer;
 mod baudrate;
 pub mod constants;
 pub mod context;
 pub mod device_info;
 pub mod eeprom;
 pub mod error;
+pub mod mpsse;
 pub mod stream;
 pub mod types;
 
 // ---- Convenience re-exports ----
 
+pub use async_transfer::{ReadTransferControl, WriteTransferControl};
 pub use constants::FTDI_VID;
 pub use context::FtdiDevice;
 pub use device_info::{find_device, find_devices, DeviceFilter};

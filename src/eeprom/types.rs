@@ -195,6 +195,86 @@ impl Default for FtdiEeprom {
 }
 
 impl FtdiEeprom {
+    /// Initialize the EEPROM with chip-type-appropriate defaults.
+    ///
+    /// This sets the vendor/product IDs, USB version, release number, max power,
+    /// CBUS pin functions, EEPROM size, and string descriptors to sensible
+    /// defaults for the given chip type. This is the equivalent of
+    /// `ftdi_eeprom_initdefaults()` from libftdi.
+    ///
+    /// If `manufacturer`, `product`, or `serial` are `None`, appropriate defaults
+    /// are used (FTDI for manufacturer, chip-specific name for product, no serial).
+    pub fn init_defaults(
+        &mut self,
+        chip_type: crate::types::ChipType,
+        manufacturer: Option<&str>,
+        product: Option<&str>,
+        serial: Option<&str>,
+    ) {
+        use crate::constants::{cbus, cbusx};
+        use crate::types::ChipType;
+
+        // Zero everything first (like libftdi's memset)
+        *self = Self::default();
+
+        // Vendor ID is always FTDI
+        self.vendor_id = 0x0403;
+        self.use_serial = true;
+
+        // Product ID per chip type
+        self.product_id = chip_type.default_product_id();
+
+        // USB version
+        self.usb_version = if chip_type == ChipType::Am {
+            0x0101
+        } else {
+            0x0200
+        };
+
+        // Max power
+        self.max_power = match chip_type {
+            ChipType::Ft232R | ChipType::Ft230X => 90,
+            _ => 100,
+        };
+
+        // Strings
+        self.manufacturer = Some(manufacturer.unwrap_or("FTDI").to_owned());
+
+        self.product = Some(
+            product
+                .unwrap_or(chip_type.default_product_name())
+                .to_owned(),
+        );
+
+        self.serial = serial.map(|s| s.to_owned());
+
+        // EEPROM size and CBUS defaults
+        match chip_type {
+            ChipType::Ft232R => {
+                self.size = 0x80;
+                self.cbus_function[0] = cbus::TXLED;
+                self.cbus_function[1] = cbus::RXLED;
+                self.cbus_function[2] = cbus::TXDEN;
+                self.cbus_function[3] = cbus::PWREN;
+                self.cbus_function[4] = cbus::SLEEP;
+            }
+            ChipType::Ft230X => {
+                self.size = 0x100;
+                self.cbus_function[0] = cbusx::TXDEN;
+                self.cbus_function[1] = cbusx::RXLED;
+                self.cbus_function[2] = cbusx::TXLED;
+                self.cbus_function[3] = cbusx::SLEEP;
+            }
+            _ => {
+                // FT232H and others: CBUS pins default to TRISTATE (0), already set.
+                self.size = -1;
+            }
+        }
+
+        // Release number
+        self.release_number = chip_type.release_number();
+    }
+
     /// Get the raw EEPROM buffer.
     pub fn raw_buf(&self) -> &[u8; FTDI_MAX_EEPROM_SIZE] {
         &self.buf

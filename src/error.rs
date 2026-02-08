@@ -66,6 +66,10 @@ pub enum Error {
     #[error("USB reset failed")]
     ResetFailed,
 
+    /// An I2C operation received a NACK from the slave device.
+    #[error("I2C NACK: {0}")]
+    I2cNack(&'static str),
+
     /// A descriptor read failed.
     #[error("descriptor error: {0}")]
     Descriptor(#[from] nusb::GetDescriptorError),

@@ -185,6 +185,24 @@ impl FtdiDevice {
         super::build::build(&mut self.eeprom, chip_type)
     }
 
+    /// Initialize the EEPROM with chip-appropriate defaults.
+    ///
+    /// Sets vendor/product IDs, USB version, CBUS functions, EEPROM size,
+    /// and other fields to sensible defaults for the connected chip. If
+    /// string parameters are `None`, appropriate defaults are used.
+    ///
+    /// This is the equivalent of `ftdi_eeprom_initdefaults()` from libftdi.
+    pub fn eeprom_init_defaults(
+        &mut self,
+        manufacturer: Option<&str>,
+        product: Option<&str>,
+        serial: Option<&str>,
+    ) {
+        let chip_type = self.chip_type();
+        self.eeprom
+            .init_defaults(chip_type, manufacturer, product, serial);
+    }
+
     /// Get a reference to the EEPROM structure.
     pub fn eeprom(&self) -> &super::FtdiEeprom {
         &self.eeprom

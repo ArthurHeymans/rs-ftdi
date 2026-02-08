@@ -212,13 +212,46 @@ impl FtdiDevice {
 impl FtdiDevice {
     /// Open the bulk IN endpoint (device -> host) for reading.
     ///
-    /// This is used by the streaming module and should not be called directly.
+    /// This is used by the streaming and async modules and should not be called directly.
     pub(crate) fn bulk_in_endpoint(
         &self,
     ) -> Result<nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::In>> {
         self.interface
             .endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(self.read_ep)
             .map_err(Error::Usb)
+    }
+
+    /// Open the bulk OUT endpoint (host -> device) for writing.
+    ///
+    /// This is used by the async module and should not be called directly.
+    pub(crate) fn bulk_out_endpoint(
+        &self,
+    ) -> Result<nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::Out>> {
+        self.interface
+            .endpoint::<nusb::transfer::Bulk, nusb::transfer::Out>(self.write_ep)
+            .map_err(Error::Usb)
+    }
+
+    /// Get the write buffer chunk size (for internal use by async module).
+    pub(crate) fn writebuffer_chunksize(&self) -> usize {
+        self.writebuffer_chunksize
+    }
+
+    /// Get the read buffer chunk size (for internal use by async module).
+    pub(crate) fn readbuffer_chunksize(&self) -> usize {
+        self.readbuffer_chunksize
+    }
+
+    /// Drain up to `n` bytes from the internal read buffer (for async module).
+    pub(crate) fn drain_readbuffer(&mut self, max: usize) -> Vec<u8> {
+        let n = self.readbuffer_remaining.min(max);
+        if n == 0 {
+            return Vec::new();
+        }
+        let data = self.readbuffer[self.readbuffer_offset..self.readbuffer_offset + n].to_vec();
+        self.readbuffer_remaining -= n;
+        self.readbuffer_offset += n;
+        data
     }
 
     /// Send a vendor OUT control transfer to the device.

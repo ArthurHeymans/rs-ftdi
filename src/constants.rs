@@ -201,6 +201,116 @@ pub mod mpsse {
     }
 }
 
+// ---- CBUS pin function enumerations ----
+
+/// CBUS pin functions for FT232R.
+pub mod cbus {
+    /// TX Data Enable.
+    pub const TXDEN: u8 = 0;
+    /// Power Enable.
+    pub const PWREN: u8 = 1;
+    /// RX LED (active low).
+    pub const RXLED: u8 = 2;
+    /// TX LED (active low).
+    pub const TXLED: u8 = 3;
+    /// TX/RX LED (active low).
+    pub const TXRXLED: u8 = 4;
+    /// Sleep.
+    pub const SLEEP: u8 = 5;
+    /// 48 MHz clock output.
+    pub const CLK48: u8 = 6;
+    /// 24 MHz clock output.
+    pub const CLK24: u8 = 7;
+    /// 12 MHz clock output.
+    pub const CLK12: u8 = 8;
+    /// 6 MHz clock output.
+    pub const CLK6: u8 = 9;
+    /// IO mode for CBUS bitbang.
+    pub const IOMODE: u8 = 0x0A;
+    /// Bitbang write.
+    pub const BB_WR: u8 = 0x0B;
+    /// Bitbang read.
+    pub const BB_RD: u8 = 0x0C;
+}
+
+/// CBUS pin functions for FT232H.
+pub mod cbush {
+    /// Tristate (high-Z).
+    pub const TRISTATE: u8 = 0;
+    /// TX LED.
+    pub const TXLED: u8 = 1;
+    /// RX LED.
+    pub const RXLED: u8 = 2;
+    /// TX/RX LED.
+    pub const TXRXLED: u8 = 3;
+    /// Power Enable.
+    pub const PWREN: u8 = 4;
+    /// Sleep.
+    pub const SLEEP: u8 = 5;
+    /// Drive low.
+    pub const DRIVE_0: u8 = 6;
+    /// Drive high.
+    pub const DRIVE_1: u8 = 7;
+    /// IO mode.
+    pub const IOMODE: u8 = 8;
+    /// TX Data Enable.
+    pub const TXDEN: u8 = 9;
+    /// 30 MHz clock output.
+    pub const CLK30: u8 = 10;
+    /// 15 MHz clock output.
+    pub const CLK15: u8 = 11;
+    /// 7.5 MHz clock output.
+    pub const CLK7_5: u8 = 12;
+}
+
+/// CBUS pin functions for FT230X.
+pub mod cbusx {
+    /// Tristate (high-Z).
+    pub const TRISTATE: u8 = 0;
+    /// TX LED.
+    pub const TXLED: u8 = 1;
+    /// RX LED.
+    pub const RXLED: u8 = 2;
+    /// TX/RX LED.
+    pub const TXRXLED: u8 = 3;
+    /// Power Enable.
+    pub const PWREN: u8 = 4;
+    /// Sleep.
+    pub const SLEEP: u8 = 5;
+    /// Drive low.
+    pub const DRIVE_0: u8 = 6;
+    /// Drive high.
+    pub const DRIVE_1: u8 = 7;
+    /// IO mode.
+    pub const IOMODE: u8 = 8;
+    /// TX Data Enable.
+    pub const TXDEN: u8 = 9;
+    /// 24 MHz clock output.
+    pub const CLK24: u8 = 10;
+    /// 12 MHz clock output.
+    pub const CLK12: u8 = 11;
+    /// 6 MHz clock output.
+    pub const CLK6: u8 = 12;
+    /// Battery detect.
+    pub const BAT_DETECT: u8 = 13;
+    /// Battery detect (negative).
+    pub const BAT_DETECT_NEG: u8 = 14;
+    /// I2C TX empty.
+    pub const I2C_TXE: u8 = 15;
+    /// I2C RX full.
+    pub const I2C_RXF: u8 = 16;
+    /// VBUS sense.
+    pub const VBUS_SENSE: u8 = 17;
+    /// Bitbang write.
+    pub const BB_WR: u8 = 18;
+    /// Bitbang read.
+    pub const BB_RD: u8 = 19;
+    /// Timestamp.
+    pub const TIME_STAMP: u8 = 20;
+    /// Awake signal.
+    pub const AWAKE: u8 = 21;
+}
+
 // ---- EEPROM channel / interface mode defines ----
 
 /// Channel mode: UART.
