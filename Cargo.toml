@@ -1,0 +1,18 @@
+[package]
+name = "ftdi"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+description = "Pure Rust library for communicating with FTDI USB devices, backed by nusb"
+repository = "https://github.com/TODO/ftdi-rs"
+keywords = ["ftdi", "usb", "serial", "mpsse", "bitbang"]
+categories = ["hardware-support", "embedded"]
+
+[dependencies]
+nusb = "0.2.1"
+thiserror = "2"
+log = "0.4"
+
+[dev-dependencies]
+env_logger = "0.11"
