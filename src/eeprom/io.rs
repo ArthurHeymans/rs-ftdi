@@ -25,18 +25,21 @@ impl FtdiDevice {
             self.eeprom.buf[i * 2 + 1] = data[1];
         }
 
-        // Auto-detect EEPROM size
+        // Auto-detect EEPROM size (matching libftdi's ftdi_read_eeprom logic)
         if self.chip_type() == ChipType::Ft232R {
             self.eeprom.size = 0x80;
         } else {
             let buf = &self.eeprom.buf;
-            if buf[FTDI_MAX_EEPROM_SIZE - 1] == 0xFF
-                && buf.iter().rev().take_while(|&&b| b == 0xFF).count() == FTDI_MAX_EEPROM_SIZE
-            {
+            // Check for blank EEPROM: last byte is 0xFF and it's the last occurrence
+            // (C uses strrchr to find last 0xFF position == end of buffer)
+            if buf[FTDI_MAX_EEPROM_SIZE - 1] == 0xFF && buf.iter().all(|&b| b == 0xFF) {
                 self.eeprom.size = -1; // Blank EEPROM
             } else if buf[..0x80] == buf[0x80..0x100] {
-                // First half equals second half -> 128 bytes (93x46)
+                // First half equals second half -> 128 bytes (93x56 wrap)
                 self.eeprom.size = 0x80;
+            } else if buf[..0x40] == buf[0x40..0x80] {
+                // First quarter equals second quarter -> 64 bytes (93x46 wrap)
+                self.eeprom.size = 0x40;
             } else {
                 self.eeprom.size = 0x100;
             }
@@ -180,8 +183,26 @@ impl FtdiDevice {
     /// Build the EEPROM binary image from the decoded structure.
     ///
     /// Returns the number of bytes available for user data.
+    ///
+    /// For FT230X devices, this reads the factory configuration data
+    /// (addresses 0x40-0x4F) from the device to include in the checksum,
+    /// matching the behavior of `ftdi_eeprom_build()` in libftdi.
     pub fn eeprom_build(&mut self) -> Result<usize> {
         let chip_type = self.chip_type();
+
+        // For FT230X, read factory data area (0x40-0x4F) from the device
+        // so it's included in the checksum calculation.
+        if chip_type == ChipType::Ft230X {
+            for i in 0x40..0x50u16 {
+                if let Ok(data) = self.control_in(SIO_READ_EEPROM_REQUEST, 0, i, 2) {
+                    if data.len() >= 2 {
+                        self.eeprom.buf[(i as usize) * 2] = data[0];
+                        self.eeprom.buf[(i as usize) * 2 + 1] = data[1];
+                    }
+                }
+            }
+        }
+
         super::build::build(&mut self.eeprom, chip_type)
     }
 

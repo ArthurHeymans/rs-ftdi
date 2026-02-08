@@ -333,9 +333,11 @@ impl FtdiDevice {
     }
 
     /// Flush both RX and TX buffers.
+    ///
+    /// Matches the order of `ftdi_tcioflush()`: TX first, then RX.
     pub fn flush_all(&mut self) -> Result<()> {
-        self.flush_rx()?;
-        self.flush_tx()
+        self.flush_tx()?;
+        self.flush_rx()
     }
 }
 

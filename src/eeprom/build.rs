@@ -202,34 +202,44 @@ pub fn build(eeprom: &mut FtdiEeprom, chip_type: ChipType) -> Result<usize> {
             }
         }
         ChipType::Ft2232C => {
-            eeprom.buf[0x0C] = eeprom.usb_version as u8;
-            eeprom.buf[0x0D] = (eeprom.usb_version >> 8) as u8;
-            if eeprom.use_usb_version {
-                eeprom.buf[0x0A] |= 0x10;
-            }
-            if eeprom.suspend_pull_downs {
-                eeprom.buf[0x0A] |= 0x04;
-            }
+            eeprom.buf[0x00] = type2bit(eeprom.channel_a_type, ChipType::Ft2232C);
             if eeprom.channel_a_driver {
-                eeprom.buf[0x00] |= 0x08;
+                eeprom.buf[0x00] |= 0x08; // DRIVER_VCP
             }
             if eeprom.high_current_a {
-                eeprom.buf[0x00] |= 0x10;
+                eeprom.buf[0x00] |= 0x10; // HIGH_CURRENT_DRIVE
             }
+            eeprom.buf[0x01] = type2bit(eeprom.channel_b_type, ChipType::Ft2232C);
             if eeprom.channel_b_driver {
                 eeprom.buf[0x01] |= 0x08;
             }
             if eeprom.high_current_b {
                 eeprom.buf[0x01] |= 0x10;
             }
+            if eeprom.in_is_isochronous {
+                eeprom.buf[0x0A] |= 0x01;
+            }
+            if eeprom.out_is_isochronous {
+                eeprom.buf[0x0A] |= 0x02;
+            }
+            if eeprom.suspend_pull_downs {
+                eeprom.buf[0x0A] |= 0x04;
+            }
+            if eeprom.use_usb_version {
+                eeprom.buf[0x0A] |= 0x10;
+            }
+            eeprom.buf[0x0C] = eeprom.usb_version as u8;
+            eeprom.buf[0x0D] = (eeprom.usb_version >> 8) as u8;
             eeprom.buf[0x14] = eeprom.chip as u8;
         }
         ChipType::Ft232R => {
+            eeprom.buf[0x00] = type2bit(eeprom.channel_a_type, ChipType::Ft232R);
             if eeprom.high_current {
-                eeprom.buf[0x00] |= 0x04;
+                eeprom.buf[0x00] |= 0x04; // HIGH_CURRENT_DRIVE_R
             }
+            // Field is inverted for TYPE_R: Bit 3 set = D2XX, clear = VCP
             if !eeprom.channel_a_driver {
-                eeprom.buf[0x00] |= 0x08; // inverted for R-type
+                eeprom.buf[0x00] |= 0x08;
             }
             if eeprom.external_oscillator {
                 eeprom.buf[0x00] |= 0x02;
@@ -249,9 +259,11 @@ pub fn build(eeprom: &mut FtdiEeprom, chip_type: ChipType) -> Result<usize> {
             eeprom.buf[0x16] = eeprom.cbus_function[4] & 0x0F;
         }
         ChipType::Ft2232H => {
+            eeprom.buf[0x00] = type2bit(eeprom.channel_a_type, ChipType::Ft2232H);
             if eeprom.channel_a_driver {
-                eeprom.buf[0x00] |= 0x08;
+                eeprom.buf[0x00] |= 0x08; // DRIVER_VCP
             }
+            eeprom.buf[0x01] = type2bit(eeprom.channel_b_type, ChipType::Ft2232H);
             if eeprom.channel_b_driver {
                 eeprom.buf[0x01] |= 0x08;
             }
@@ -326,6 +338,7 @@ pub fn build(eeprom: &mut FtdiEeprom, chip_type: ChipType) -> Result<usize> {
             eeprom.buf[0x18] = eeprom.chip as u8;
         }
         ChipType::Ft232H => {
+            eeprom.buf[0x00] = type2bit(eeprom.channel_a_type, ChipType::Ft232H);
             if eeprom.channel_a_driver {
                 eeprom.buf[0x00] |= 0x10; // DRIVER_VCPH
             }
@@ -417,4 +430,33 @@ fn encode_single_group(drive: u8, schmitt: bool, slew: bool) -> u8 {
         v |= 0x04;
     }
     v
+}
+
+/// Convert a channel type value to the encoded EEPROM bit pattern.
+///
+/// This is the equivalent of `type2bit()` in libftdi.
+fn type2bit(channel_type: u8, chip: ChipType) -> u8 {
+    match chip {
+        ChipType::Ft2232H | ChipType::Ft2232C => match channel_type {
+            CHANNEL_IS_UART => 0,
+            CHANNEL_IS_FIFO => 0x01,
+            CHANNEL_IS_OPTO => 0x02,
+            CHANNEL_IS_CPU => 0x04,
+            _ => 0,
+        },
+        ChipType::Ft232H => match channel_type {
+            CHANNEL_IS_UART => 0,
+            CHANNEL_IS_FIFO => 0x01,
+            CHANNEL_IS_OPTO => 0x02,
+            CHANNEL_IS_CPU => 0x04,
+            CHANNEL_IS_FT1284 => 0x08,
+            _ => 0,
+        },
+        ChipType::Ft232R => match channel_type {
+            CHANNEL_IS_UART => 0,
+            CHANNEL_IS_FIFO => 0x01,
+            _ => 0,
+        },
+        _ => 0,
+    }
 }

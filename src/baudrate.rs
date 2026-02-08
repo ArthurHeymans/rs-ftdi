@@ -105,7 +105,13 @@ fn clkbits(baudrate: u32, clk: u32, clk_div: u32) -> (u32, u64) {
     } else {
         divisor / 2
     };
-    let best_divisor = best_divisor.min(0x1FFFF);
+    // C code: if(best_divisor > 0x20000) best_divisor = 0x1ffff;
+    // Note: 0x20000 is a valid divisor value, only values above it are clamped.
+    let best_divisor = if best_divisor > 0x20000 {
+        0x1FFFF
+    } else {
+        best_divisor
+    };
 
     let mut best_baud = clk * 16 / clk_div / best_divisor;
     if best_baud & 1 != 0 {
