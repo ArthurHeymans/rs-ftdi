@@ -70,6 +70,13 @@ pub enum Error {
     #[error("I2C NACK: {0}")]
     I2cNack(&'static str),
 
+    /// The MPSSE engine returned a bad-command response (0xFA).
+    ///
+    /// This means the MPSSE received an opcode it doesn't recognize.
+    /// The `u8` value is the rejected opcode.
+    #[error("MPSSE bad command: rejected opcode 0x{0:02X}")]
+    MpsseBadCommand(u8),
+
     /// A descriptor read failed.
     #[error("descriptor error: {0}")]
     Descriptor(#[from] nusb::GetDescriptorError),

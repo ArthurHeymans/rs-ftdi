@@ -381,3 +381,210 @@ impl Interface {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- ChipType tests ----
+
+    #[test]
+    fn h_type_detection() {
+        assert!(ChipType::Ft2232H.is_h_type());
+        assert!(ChipType::Ft4232H.is_h_type());
+        assert!(ChipType::Ft232H.is_h_type());
+        assert!(!ChipType::Ft232R.is_h_type());
+        assert!(!ChipType::Ft230X.is_h_type());
+        assert!(!ChipType::Bm.is_h_type());
+        assert!(!ChipType::Am.is_h_type());
+        assert!(!ChipType::Ft2232C.is_h_type());
+    }
+
+    #[test]
+    fn chip_type_product_ids() {
+        assert_eq!(ChipType::Am.default_product_id(), 0x6001);
+        assert_eq!(ChipType::Bm.default_product_id(), 0x6001);
+        assert_eq!(ChipType::Ft232R.default_product_id(), 0x6001);
+        assert_eq!(ChipType::Ft2232C.default_product_id(), 0x6010);
+        assert_eq!(ChipType::Ft2232H.default_product_id(), 0x6010);
+        assert_eq!(ChipType::Ft4232H.default_product_id(), 0x6011);
+        assert_eq!(ChipType::Ft232H.default_product_id(), 0x6014);
+        assert_eq!(ChipType::Ft230X.default_product_id(), 0x6015);
+    }
+
+    #[test]
+    fn chip_type_release_numbers_ascending() {
+        // Release numbers should be distinct and ascending by generation
+        let types = [
+            ChipType::Am,
+            ChipType::Bm,
+            ChipType::Ft2232C,
+            ChipType::Ft232R,
+            ChipType::Ft2232H,
+            ChipType::Ft4232H,
+            ChipType::Ft232H,
+            ChipType::Ft230X,
+        ];
+        for i in 1..types.len() {
+            assert!(
+                types[i].release_number() > types[i - 1].release_number(),
+                "{:?} release ({:#06X}) should be > {:?} release ({:#06X})",
+                types[i],
+                types[i].release_number(),
+                types[i - 1],
+                types[i - 1].release_number()
+            );
+        }
+    }
+
+    // ---- Interface endpoint mapping tests ----
+
+    #[test]
+    fn interface_a_endpoints() {
+        let cfg = Interface::A.config();
+        assert_eq!(cfg.interface_num, 0);
+        assert_eq!(cfg.usb_index, 1);
+        assert_eq!(cfg.write_ep, 0x02);
+        assert_eq!(cfg.read_ep, 0x81);
+    }
+
+    #[test]
+    fn interface_any_equals_a() {
+        let a = Interface::A.config();
+        let any = Interface::Any.config();
+        assert_eq!(a.interface_num, any.interface_num);
+        assert_eq!(a.usb_index, any.usb_index);
+        assert_eq!(a.write_ep, any.write_ep);
+        assert_eq!(a.read_ep, any.read_ep);
+    }
+
+    #[test]
+    fn interface_b_endpoints() {
+        let cfg = Interface::B.config();
+        assert_eq!(cfg.interface_num, 1);
+        assert_eq!(cfg.usb_index, 2);
+        assert_eq!(cfg.write_ep, 0x04);
+        assert_eq!(cfg.read_ep, 0x83);
+    }
+
+    #[test]
+    fn interface_c_endpoints() {
+        let cfg = Interface::C.config();
+        assert_eq!(cfg.interface_num, 2);
+        assert_eq!(cfg.usb_index, 3);
+        assert_eq!(cfg.write_ep, 0x06);
+        assert_eq!(cfg.read_ep, 0x85);
+    }
+
+    #[test]
+    fn interface_d_endpoints() {
+        let cfg = Interface::D.config();
+        assert_eq!(cfg.interface_num, 3);
+        assert_eq!(cfg.usb_index, 4);
+        assert_eq!(cfg.write_ep, 0x08);
+        assert_eq!(cfg.read_ep, 0x87);
+    }
+
+    #[test]
+    fn endpoint_addresses_have_correct_direction_bits() {
+        // Write endpoints (host->device): bit 7 should be 0
+        // Read endpoints (device->host): bit 7 should be 1
+        for iface in [Interface::A, Interface::B, Interface::C, Interface::D] {
+            let cfg = iface.config();
+            assert_eq!(
+                cfg.write_ep & 0x80,
+                0x00,
+                "{:?} write_ep should have bit 7 clear",
+                iface
+            );
+            assert_eq!(
+                cfg.read_ep & 0x80,
+                0x80,
+                "{:?} read_ep should have bit 7 set",
+                iface
+            );
+        }
+    }
+
+    // ---- Wire encoding tests ----
+
+    #[test]
+    fn parity_wire_values() {
+        assert_eq!(Parity::None.wire_value(), 0x00);
+        assert_eq!(Parity::Odd.wire_value(), 0x01);
+        assert_eq!(Parity::Even.wire_value(), 0x02);
+        assert_eq!(Parity::Mark.wire_value(), 0x03);
+        assert_eq!(Parity::Space.wire_value(), 0x04);
+    }
+
+    #[test]
+    fn stop_bits_wire_values() {
+        assert_eq!(StopBits::One.wire_value(), 0x00);
+        assert_eq!(StopBits::OnePointFive.wire_value(), 0x01);
+        assert_eq!(StopBits::Two.wire_value(), 0x02);
+    }
+
+    #[test]
+    fn data_bits_wire_values() {
+        assert_eq!(DataBits::Seven.wire_value(), 7);
+        assert_eq!(DataBits::Eight.wire_value(), 8);
+    }
+
+    #[test]
+    fn break_type_wire_values() {
+        assert_eq!(BreakType::Off.wire_value(), 0x00);
+        assert_eq!(BreakType::On.wire_value(), 0x01);
+    }
+
+    #[test]
+    fn bitmode_wire_values() {
+        assert_eq!(BitMode::Reset.wire_value(), 0x00);
+        assert_eq!(BitMode::BitBang.wire_value(), 0x01);
+        assert_eq!(BitMode::Mpsse.wire_value(), 0x02);
+        assert_eq!(BitMode::SyncBB.wire_value(), 0x04);
+        assert_eq!(BitMode::Mcu.wire_value(), 0x08);
+        assert_eq!(BitMode::Opto.wire_value(), 0x10);
+        assert_eq!(BitMode::Cbus.wire_value(), 0x20);
+        assert_eq!(BitMode::SyncFf.wire_value(), 0x40);
+        assert_eq!(BitMode::Ft1284.wire_value(), 0x80);
+    }
+
+    // ---- ModemStatus tests ----
+
+    #[test]
+    fn modem_status_cts() {
+        let ms = ModemStatus::from_raw(0x0010);
+        assert!(ms.cts());
+        assert!(!ms.dsr());
+        assert!(!ms.ri());
+        assert!(!ms.rlsd());
+    }
+
+    #[test]
+    fn modem_status_all_lines() {
+        let ms = ModemStatus::from_raw(0x00F0);
+        assert!(ms.cts());
+        assert!(ms.dsr());
+        assert!(ms.ri());
+        assert!(ms.rlsd());
+    }
+
+    #[test]
+    fn modem_status_line_errors() {
+        let ms = ModemStatus::from_raw(0xFF00);
+        assert!(ms.data_ready());
+        assert!(ms.overrun_error());
+        assert!(ms.parity_error());
+        assert!(ms.framing_error());
+        assert!(ms.break_interrupt());
+        assert!(ms.transmitter_holding_empty());
+        assert!(ms.transmitter_empty());
+        assert!(ms.fifo_error());
+    }
+
+    #[test]
+    fn modem_status_raw_round_trip() {
+        let ms = ModemStatus::from_raw(0x1234);
+        assert_eq!(ms.raw(), 0x1234);
+    }
+}

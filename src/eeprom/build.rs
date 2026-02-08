@@ -435,7 +435,7 @@ fn encode_single_group(drive: u8, schmitt: bool, slew: bool) -> u8 {
 /// Convert a channel type value to the encoded EEPROM bit pattern.
 ///
 /// This is the equivalent of `type2bit()` in libftdi.
-fn type2bit(channel_type: u8, chip: ChipType) -> u8 {
+pub(crate) fn type2bit(channel_type: u8, chip: ChipType) -> u8 {
     match chip {
         ChipType::Ft2232H | ChipType::Ft2232C => match channel_type {
             CHANNEL_IS_UART => 0,
@@ -458,5 +458,587 @@ fn type2bit(channel_type: u8, chip: ChipType) -> u8 {
             _ => 0,
         },
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::eeprom::decode;
+    use crate::eeprom::FtdiEeprom;
+    use crate::types::ChipType;
+
+    // ---- type2bit tests ----
+
+    #[test]
+    fn type2bit_ft2232c_uart() {
+        assert_eq!(type2bit(CHANNEL_IS_UART, ChipType::Ft2232C), 0);
+    }
+
+    #[test]
+    fn type2bit_ft2232c_fifo() {
+        assert_eq!(type2bit(CHANNEL_IS_FIFO, ChipType::Ft2232C), 0x01);
+    }
+
+    #[test]
+    fn type2bit_ft2232c_opto() {
+        assert_eq!(type2bit(CHANNEL_IS_OPTO, ChipType::Ft2232C), 0x02);
+    }
+
+    #[test]
+    fn type2bit_ft2232c_cpu() {
+        assert_eq!(type2bit(CHANNEL_IS_CPU, ChipType::Ft2232C), 0x04);
+    }
+
+    #[test]
+    fn type2bit_ft2232c_unknown_defaults_zero() {
+        assert_eq!(type2bit(0xFF, ChipType::Ft2232C), 0);
+    }
+
+    #[test]
+    fn type2bit_ft2232h_matches_ft2232c() {
+        // FT2232H and FT2232C share the same encoding
+        for ch_type in [
+            CHANNEL_IS_UART,
+            CHANNEL_IS_FIFO,
+            CHANNEL_IS_OPTO,
+            CHANNEL_IS_CPU,
+        ] {
+            assert_eq!(
+                type2bit(ch_type, ChipType::Ft2232H),
+                type2bit(ch_type, ChipType::Ft2232C),
+                "mismatch for channel type 0x{:02X}",
+                ch_type
+            );
+        }
+    }
+
+    #[test]
+    fn type2bit_ft232h_ft1284() {
+        assert_eq!(type2bit(CHANNEL_IS_FT1284, ChipType::Ft232H), 0x08);
+    }
+
+    #[test]
+    fn type2bit_ft232h_cpu() {
+        assert_eq!(type2bit(CHANNEL_IS_CPU, ChipType::Ft232H), 0x04);
+    }
+
+    #[test]
+    fn type2bit_ft232r_fifo() {
+        assert_eq!(type2bit(CHANNEL_IS_FIFO, ChipType::Ft232R), 0x01);
+    }
+
+    #[test]
+    fn type2bit_ft232r_opto_unsupported() {
+        // FT232R doesn't support opto, should default to 0
+        assert_eq!(type2bit(CHANNEL_IS_OPTO, ChipType::Ft232R), 0);
+    }
+
+    #[test]
+    fn type2bit_am_always_zero() {
+        // AM chip has no type2bit support
+        for ch_type in [
+            CHANNEL_IS_UART,
+            CHANNEL_IS_FIFO,
+            CHANNEL_IS_OPTO,
+            CHANNEL_IS_CPU,
+        ] {
+            assert_eq!(type2bit(ch_type, ChipType::Am), 0);
+        }
+    }
+
+    #[test]
+    fn type2bit_bm_always_zero() {
+        for ch_type in [
+            CHANNEL_IS_UART,
+            CHANNEL_IS_FIFO,
+            CHANNEL_IS_OPTO,
+            CHANNEL_IS_CPU,
+        ] {
+            assert_eq!(type2bit(ch_type, ChipType::Bm), 0);
+        }
+    }
+
+    // ---- Checksum tests ----
+
+    #[test]
+    fn checksum_seed_is_aaaa() {
+        // An all-zero buffer of size 4 (2 words): only word 0 is processed (size/2 - 1 = 1)
+        // csum = 0xAAAA ^ 0x0000 = 0xAAAA, rotated left by 1 = 0x5555
+        let buf = [0u8; 4];
+        assert_eq!(checksum(&buf, 4, false), 0x5555);
+    }
+
+    #[test]
+    fn checksum_round_trip() {
+        // Build an EEPROM and verify the stored checksum matches computed
+        let mut eeprom = FtdiEeprom::default();
+        eeprom.init_defaults(ChipType::Bm, None, None, None);
+        eeprom.chip = 0x46;
+        eeprom.size = 0x80;
+        let _ = build(&mut eeprom, ChipType::Bm).unwrap();
+
+        let size = eeprom.size as usize;
+        let stored = (eeprom.buf[size - 2] as u16) | ((eeprom.buf[size - 1] as u16) << 8);
+        let computed = checksum(&eeprom.buf, size, false);
+        assert_eq!(stored, computed);
+    }
+
+    #[test]
+    fn checksum_ft230x_skips_user_section() {
+        // FT230X checksum should skip addresses 0x12*2..0x40*2
+        let mut buf = [0u8; 0x100];
+        // Put some data in the skipped region
+        buf[0x24] = 0xFF;
+        buf[0x25] = 0xFF;
+        buf[0x50] = 0xFF;
+        buf[0x51] = 0xFF;
+
+        let csum_a = checksum(&buf, 0x100, true);
+
+        // Change data in skipped region — should NOT affect checksum
+        buf[0x24] = 0x00;
+        buf[0x25] = 0x00;
+        let csum_b = checksum(&buf, 0x100, true);
+        assert_eq!(csum_a, csum_b);
+
+        // Change data outside skipped region — SHOULD affect checksum
+        buf[0x02] = 0xFF;
+        let csum_c = checksum(&buf, 0x100, true);
+        assert_ne!(csum_a, csum_c);
+    }
+
+    // ---- EEPROM build/decode round-trip tests ----
+
+    /// Helper: build an EEPROM image and then decode it, verifying all common fields survive.
+    fn round_trip_test(chip_type: ChipType) {
+        let mut eeprom = FtdiEeprom::default();
+        eeprom.init_defaults(chip_type, Some("TestMfr"), Some("TestProd"), Some("SER123"));
+
+        // Set chip and size so build() will work
+        eeprom.chip = match chip_type {
+            ChipType::Am | ChipType::Bm => 0x46,
+            ChipType::Ft2232C => 0x46,
+            ChipType::Ft232R => 0,
+            ChipType::Ft2232H => 0x56,
+            ChipType::Ft4232H => 0x56,
+            ChipType::Ft232H => 0x56,
+            ChipType::Ft230X => 0,
+        };
+        if eeprom.size == -1 {
+            eeprom.size = 0x100;
+        }
+
+        let user_area = build(&mut eeprom, chip_type).unwrap();
+        assert!(user_area > 0, "should have some user area space");
+
+        // Save the fields we set
+        let vid = eeprom.vendor_id;
+        let pid = eeprom.product_id;
+        let release = eeprom.release_number;
+        let max_power = eeprom.max_power;
+        let use_serial = eeprom.use_serial;
+        let mfr = eeprom.manufacturer.clone();
+        let prod = eeprom.product.clone();
+        let ser = eeprom.serial.clone();
+
+        // Now decode
+        let mut decoded = FtdiEeprom::default();
+        decoded.buf = eeprom.buf;
+        decoded.size = eeprom.size;
+
+        decode::decode(&mut decoded, chip_type).unwrap();
+
+        // Verify common fields
+        assert_eq!(
+            decoded.vendor_id, vid,
+            "vendor_id mismatch for {:?}",
+            chip_type
+        );
+        assert_eq!(
+            decoded.product_id, pid,
+            "product_id mismatch for {:?}",
+            chip_type
+        );
+        assert_eq!(
+            decoded.release_number, release,
+            "release_number mismatch for {:?}",
+            chip_type
+        );
+        assert_eq!(
+            decoded.max_power, max_power,
+            "max_power mismatch for {:?}",
+            chip_type
+        );
+        assert_eq!(
+            decoded.use_serial, use_serial,
+            "use_serial mismatch for {:?}",
+            chip_type
+        );
+        assert_eq!(
+            decoded.manufacturer, mfr,
+            "manufacturer mismatch for {:?}",
+            chip_type
+        );
+        assert_eq!(
+            decoded.product, prod,
+            "product mismatch for {:?}",
+            chip_type
+        );
+        assert_eq!(decoded.serial, ser, "serial mismatch for {:?}", chip_type);
+    }
+
+    #[test]
+    fn round_trip_bm() {
+        round_trip_test(ChipType::Bm);
+    }
+
+    #[test]
+    fn round_trip_ft2232c() {
+        round_trip_test(ChipType::Ft2232C);
+    }
+
+    #[test]
+    fn round_trip_ft232r() {
+        round_trip_test(ChipType::Ft232R);
+    }
+
+    #[test]
+    fn round_trip_ft2232h() {
+        round_trip_test(ChipType::Ft2232H);
+    }
+
+    #[test]
+    fn round_trip_ft4232h() {
+        round_trip_test(ChipType::Ft4232H);
+    }
+
+    #[test]
+    fn round_trip_ft232h() {
+        round_trip_test(ChipType::Ft232H);
+    }
+
+    #[test]
+    fn round_trip_ft230x() {
+        round_trip_test(ChipType::Ft230X);
+    }
+
+    #[test]
+    fn round_trip_ft232r_cbus_functions() {
+        let mut eeprom = FtdiEeprom::default();
+        eeprom.init_defaults(ChipType::Ft232R, None, None, None);
+        eeprom.chip = 0;
+        // init_defaults sets CBUS for FT232R: TXLED, RXLED, TXDEN, PWREN, SLEEP
+        let cbus_orig = eeprom.cbus_function;
+
+        build(&mut eeprom, ChipType::Ft232R).unwrap();
+
+        let mut decoded = FtdiEeprom::default();
+        decoded.buf = eeprom.buf;
+        decoded.size = eeprom.size;
+        decode::decode(&mut decoded, ChipType::Ft232R).unwrap();
+
+        // First 5 CBUS functions should survive the round trip
+        for i in 0..5 {
+            assert_eq!(
+                decoded.cbus_function[i], cbus_orig[i],
+                "CBUS[{}] mismatch: decoded={}, original={}",
+                i, decoded.cbus_function[i], cbus_orig[i]
+            );
+        }
+    }
+
+    #[test]
+    fn round_trip_ft232h_cbus_functions() {
+        let mut eeprom = FtdiEeprom::default();
+        eeprom.init_defaults(ChipType::Ft232H, None, None, None);
+        eeprom.chip = 0x56;
+        eeprom.size = 0x100;
+
+        // Set some CBUS functions
+        eeprom.cbus_function[0] = 1; // TXLED
+        eeprom.cbus_function[1] = 2; // RXLED
+        eeprom.cbus_function[2] = 3; // TXRXLED
+        eeprom.cbus_function[3] = 4; // PWREN
+        eeprom.cbus_function[4] = 5; // SLEEP
+        eeprom.cbus_function[5] = 6; // DRIVE_0
+        eeprom.cbus_function[6] = 7; // DRIVE_1
+        eeprom.cbus_function[7] = 8; // IOMODE
+        eeprom.cbus_function[8] = 9; // TXDEN
+        eeprom.cbus_function[9] = 10; // CLK30
+
+        build(&mut eeprom, ChipType::Ft232H).unwrap();
+
+        let mut decoded = FtdiEeprom::default();
+        decoded.buf = eeprom.buf;
+        decoded.size = eeprom.size;
+        decode::decode(&mut decoded, ChipType::Ft232H).unwrap();
+
+        for i in 0..10 {
+            assert_eq!(
+                decoded.cbus_function[i], eeprom.cbus_function[i],
+                "CBUS[{}] mismatch for FT232H",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn round_trip_ft2232h_channel_types() {
+        let mut eeprom = FtdiEeprom::default();
+        eeprom.init_defaults(ChipType::Ft2232H, None, None, None);
+        eeprom.chip = 0x56;
+        eeprom.size = 0x100;
+        eeprom.channel_a_type = CHANNEL_IS_FIFO;
+        eeprom.channel_b_type = CHANNEL_IS_OPTO;
+        eeprom.channel_a_driver = true;
+        eeprom.channel_b_driver = false;
+        eeprom.suspend_dbus7 = true;
+
+        build(&mut eeprom, ChipType::Ft2232H).unwrap();
+
+        let mut decoded = FtdiEeprom::default();
+        decoded.buf = eeprom.buf;
+        decoded.size = eeprom.size;
+        decode::decode(&mut decoded, ChipType::Ft2232H).unwrap();
+
+        assert_eq!(decoded.channel_a_type, CHANNEL_IS_FIFO);
+        assert_eq!(decoded.channel_b_type, CHANNEL_IS_OPTO);
+        assert!(decoded.channel_a_driver);
+        assert!(!decoded.channel_b_driver);
+        assert!(decoded.suspend_dbus7);
+    }
+
+    #[test]
+    fn round_trip_ft4232h_rs485_and_drivers() {
+        let mut eeprom = FtdiEeprom::default();
+        eeprom.init_defaults(ChipType::Ft4232H, None, None, None);
+        eeprom.chip = 0x56;
+        eeprom.size = 0x100;
+        eeprom.channel_a_driver = true;
+        eeprom.channel_b_driver = false;
+        eeprom.channel_c_driver = true;
+        eeprom.channel_d_driver = false;
+        eeprom.channel_a_rs485enable = true;
+        eeprom.channel_b_rs485enable = false;
+        eeprom.channel_c_rs485enable = true;
+        eeprom.channel_d_rs485enable = true;
+
+        build(&mut eeprom, ChipType::Ft4232H).unwrap();
+
+        let mut decoded = FtdiEeprom::default();
+        decoded.buf = eeprom.buf;
+        decoded.size = eeprom.size;
+        decode::decode(&mut decoded, ChipType::Ft4232H).unwrap();
+
+        assert!(decoded.channel_a_driver);
+        assert!(!decoded.channel_b_driver);
+        assert!(decoded.channel_c_driver);
+        assert!(!decoded.channel_d_driver);
+        assert!(decoded.channel_a_rs485enable);
+        assert!(!decoded.channel_b_rs485enable);
+        assert!(decoded.channel_c_rs485enable);
+        assert!(decoded.channel_d_rs485enable);
+    }
+
+    #[test]
+    fn round_trip_ft232h_drive_groups() {
+        let mut eeprom = FtdiEeprom::default();
+        eeprom.init_defaults(ChipType::Ft232H, None, None, None);
+        eeprom.chip = 0x56;
+        eeprom.size = 0x100;
+        eeprom.group0_drive = 2;
+        eeprom.group0_schmitt = true;
+        eeprom.group0_slew = true;
+        eeprom.group1_drive = 3;
+        eeprom.group1_schmitt = false;
+        eeprom.group1_slew = true;
+
+        build(&mut eeprom, ChipType::Ft232H).unwrap();
+
+        let mut decoded = FtdiEeprom::default();
+        decoded.buf = eeprom.buf;
+        decoded.size = eeprom.size;
+        decode::decode(&mut decoded, ChipType::Ft232H).unwrap();
+
+        assert_eq!(decoded.group0_drive, 2);
+        assert!(decoded.group0_schmitt);
+        assert!(decoded.group0_slew);
+        assert_eq!(decoded.group1_drive, 3);
+        assert!(!decoded.group1_schmitt);
+        assert!(decoded.group1_slew);
+    }
+
+    #[test]
+    fn round_trip_ft2232h_drive_groups_all_four() {
+        let mut eeprom = FtdiEeprom::default();
+        eeprom.init_defaults(ChipType::Ft2232H, None, None, None);
+        eeprom.chip = 0x56;
+        eeprom.size = 0x100;
+        eeprom.group0_drive = 0;
+        eeprom.group0_schmitt = false;
+        eeprom.group0_slew = false;
+        eeprom.group1_drive = 1;
+        eeprom.group1_schmitt = true;
+        eeprom.group1_slew = false;
+        eeprom.group2_drive = 2;
+        eeprom.group2_schmitt = false;
+        eeprom.group2_slew = true;
+        eeprom.group3_drive = 3;
+        eeprom.group3_schmitt = true;
+        eeprom.group3_slew = true;
+
+        build(&mut eeprom, ChipType::Ft2232H).unwrap();
+
+        let mut decoded = FtdiEeprom::default();
+        decoded.buf = eeprom.buf;
+        decoded.size = eeprom.size;
+        decode::decode(&mut decoded, ChipType::Ft2232H).unwrap();
+
+        assert_eq!(decoded.group0_drive, 0);
+        assert!(!decoded.group0_schmitt);
+        assert!(!decoded.group0_slew);
+        assert_eq!(decoded.group1_drive, 1);
+        assert!(decoded.group1_schmitt);
+        assert!(!decoded.group1_slew);
+        assert_eq!(decoded.group2_drive, 2);
+        assert!(!decoded.group2_schmitt);
+        assert!(decoded.group2_slew);
+        assert_eq!(decoded.group3_drive, 3);
+        assert!(decoded.group3_schmitt);
+        assert!(decoded.group3_slew);
+    }
+
+    #[test]
+    fn round_trip_ft232r_inverted_vcp_flag() {
+        // FT232R has inverted VCP flag: bit 3 set = D2XX, bit 3 clear = VCP
+        let mut eeprom = FtdiEeprom::default();
+        eeprom.init_defaults(ChipType::Ft232R, None, None, None);
+        eeprom.chip = 0;
+        eeprom.channel_a_driver = true; // VCP driver
+
+        build(&mut eeprom, ChipType::Ft232R).unwrap();
+
+        let mut decoded = FtdiEeprom::default();
+        decoded.buf = eeprom.buf;
+        decoded.size = eeprom.size;
+        decode::decode(&mut decoded, ChipType::Ft232R).unwrap();
+
+        // The inverted flag should decode correctly back to true (VCP)
+        assert!(
+            decoded.channel_a_driver,
+            "VCP flag should survive round trip for FT232R"
+        );
+    }
+
+    #[test]
+    fn round_trip_ft232r_inverted_vcp_flag_d2xx() {
+        let mut eeprom = FtdiEeprom::default();
+        eeprom.init_defaults(ChipType::Ft232R, None, None, None);
+        eeprom.chip = 0;
+        eeprom.channel_a_driver = false; // D2XX driver
+
+        build(&mut eeprom, ChipType::Ft232R).unwrap();
+
+        let mut decoded = FtdiEeprom::default();
+        decoded.buf = eeprom.buf;
+        decoded.size = eeprom.size;
+        decode::decode(&mut decoded, ChipType::Ft232R).unwrap();
+
+        assert!(
+            !decoded.channel_a_driver,
+            "D2XX flag should survive round trip for FT232R"
+        );
+    }
+
+    #[test]
+    fn build_error_on_uninit_chip() {
+        let mut eeprom = FtdiEeprom::default();
+        // chip = -1 by default -> should error
+        let result = build(&mut eeprom, ChipType::Bm);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_error_on_strings_too_long() {
+        let mut eeprom = FtdiEeprom::default();
+        eeprom.chip = 0x46;
+        eeprom.size = 0x80;
+        // Create strings that exceed the available space
+        eeprom.manufacturer = Some("A".repeat(50));
+        eeprom.product = Some("B".repeat(50));
+        eeprom.serial = Some("C".repeat(50));
+        let result = build(&mut eeprom, ChipType::Bm);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_checksum_mismatch_errors() {
+        let mut eeprom = FtdiEeprom::default();
+        eeprom.init_defaults(ChipType::Bm, None, None, None);
+        eeprom.chip = 0x46;
+        eeprom.size = 0x80;
+        build(&mut eeprom, ChipType::Bm).unwrap();
+
+        // Corrupt a byte
+        eeprom.buf[0x10] ^= 0xFF;
+
+        let mut decoded = FtdiEeprom::default();
+        decoded.buf = eeprom.buf;
+        decoded.size = eeprom.size;
+        let result = decode::decode(&mut decoded, ChipType::Bm);
+        assert!(result.is_err(), "should fail on checksum mismatch");
+    }
+
+    #[test]
+    fn round_trip_power_and_flags() {
+        let mut eeprom = FtdiEeprom::default();
+        eeprom.init_defaults(ChipType::Ft2232H, None, None, None);
+        eeprom.chip = 0x56;
+        eeprom.size = 0x100;
+        eeprom.self_powered = true;
+        eeprom.remote_wakeup = true;
+        eeprom.max_power = 200;
+        eeprom.suspend_pull_downs = true;
+
+        build(&mut eeprom, ChipType::Ft2232H).unwrap();
+
+        let mut decoded = FtdiEeprom::default();
+        decoded.buf = eeprom.buf;
+        decoded.size = eeprom.size;
+        decode::decode(&mut decoded, ChipType::Ft2232H).unwrap();
+
+        assert!(decoded.self_powered);
+        assert!(decoded.remote_wakeup);
+        assert_eq!(decoded.max_power, 200);
+        assert!(decoded.suspend_pull_downs);
+    }
+
+    // ---- encode_single_group tests ----
+
+    #[test]
+    fn encode_single_group_all_off() {
+        assert_eq!(encode_single_group(0, false, false), 0);
+    }
+
+    #[test]
+    fn encode_single_group_drive_clamps_at_3() {
+        assert_eq!(encode_single_group(5, false, false), 3);
+    }
+
+    #[test]
+    fn encode_single_group_all_on() {
+        // drive=3, schmitt=true (0x08), slew=true (0x04) = 0x0F
+        assert_eq!(encode_single_group(3, true, true), 0x0F);
+    }
+
+    #[test]
+    fn encode_single_group_just_schmitt() {
+        assert_eq!(encode_single_group(0, true, false), 0x08);
+    }
+
+    #[test]
+    fn encode_single_group_just_slew() {
+        assert_eq!(encode_single_group(0, false, true), 0x04);
     }
 }

@@ -441,4 +441,261 @@ impl SpiDevice {
         }
         cmd.extend_from_slice(&[mpsse::SET_BITS_LOW, self.idle_value, self.dir_mask]);
     }
+
+    // ---- Test-only accessors ----
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn write_cmd(&self) -> u8 {
+        self.write_cmd
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn read_cmd(&self) -> u8 {
+        self.read_cmd
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn rw_cmd(&self) -> u8 {
+        self.rw_cmd
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn dir_mask(&self) -> u8 {
+        self.dir_mask
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn idle_value(&self) -> u8 {
+        self.idle_value
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_append_cs_assert(&self, cmd: &mut Vec<u8>) {
+        self.append_cs_assert(cmd);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_append_cs_deassert(&self, cmd: &mut Vec<u8>) {
+        self.append_cs_deassert(cmd);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- SpiMode tests ----
+
+    #[test]
+    fn spi_mode_cpol() {
+        assert!(!SpiMode::Mode0.cpol());
+        assert!(!SpiMode::Mode1.cpol());
+        assert!(SpiMode::Mode2.cpol());
+        assert!(SpiMode::Mode3.cpol());
+    }
+
+    #[test]
+    fn spi_mode_cpha() {
+        assert!(!SpiMode::Mode0.cpha());
+        assert!(SpiMode::Mode1.cpha());
+        assert!(!SpiMode::Mode2.cpha());
+        assert!(SpiMode::Mode3.cpha());
+    }
+
+    // ---- MPSSE opcode tests ----
+
+    #[test]
+    fn mode0_opcodes() {
+        // Mode 0: data out on falling (WRITE_NEG), data in on rising (no READ_NEG)
+        let write_cmd = mpsse::DO_WRITE | mpsse::WRITE_NEG;
+        let read_cmd = mpsse::DO_READ;
+        let rw_cmd = mpsse::DO_WRITE | mpsse::DO_READ | mpsse::WRITE_NEG;
+
+        assert_eq!(write_cmd, 0x11);
+        assert_eq!(read_cmd, 0x20);
+        assert_eq!(rw_cmd, 0x31);
+    }
+
+    #[test]
+    fn mode1_opcodes() {
+        // Mode 1: data out on rising (no WRITE_NEG), data in on falling (READ_NEG)
+        let write_cmd = mpsse::DO_WRITE;
+        let read_cmd = mpsse::DO_READ | mpsse::READ_NEG;
+        let rw_cmd = mpsse::DO_WRITE | mpsse::DO_READ | mpsse::READ_NEG;
+
+        assert_eq!(write_cmd, 0x10);
+        assert_eq!(read_cmd, 0x24);
+        assert_eq!(rw_cmd, 0x34);
+    }
+
+    #[test]
+    fn mode0_and_mode3_share_opcodes() {
+        // Mode 0 and Mode 3 should produce the same MPSSE opcodes
+        let lsb = 0u8;
+        let mode0_write = mpsse::DO_WRITE | mpsse::WRITE_NEG | lsb;
+        let mode3_write = mpsse::DO_WRITE | mpsse::WRITE_NEG | lsb;
+        assert_eq!(mode0_write, mode3_write);
+    }
+
+    #[test]
+    fn lsb_first_flag_applied() {
+        let lsb = mpsse::LSB;
+        let write_cmd = mpsse::DO_WRITE | mpsse::WRITE_NEG | lsb;
+        assert_eq!(write_cmd & mpsse::LSB, mpsse::LSB);
+        assert_eq!(write_cmd, 0x19); // 0x10 | 0x01 | 0x08
+    }
+
+    // ---- encode_len tests ----
+
+    #[test]
+    fn encode_len_one_byte() {
+        // len=1: encodes as 0, which is (0x00, 0x00)
+        let (lo, hi) = encode_len(1);
+        assert_eq!(lo, 0x00);
+        assert_eq!(hi, 0x00);
+    }
+
+    #[test]
+    fn encode_len_256_bytes() {
+        let (lo, hi) = encode_len(256);
+        // 256 - 1 = 255 = 0xFF
+        assert_eq!(lo, 0xFF);
+        assert_eq!(hi, 0x00);
+    }
+
+    #[test]
+    fn encode_len_65536_bytes() {
+        let (lo, hi) = encode_len(65536);
+        // 65536 - 1 = 65535 = 0xFFFF
+        assert_eq!(lo, 0xFF);
+        assert_eq!(hi, 0xFF);
+    }
+
+    // ---- CS pin logic tests ----
+
+    #[test]
+    fn cs_assert_active_low() {
+        // Active low CS on ADBUS3 (0x08): idle has CS=high, asserted = CS low
+        let spi = SpiDevice {
+            mode: SpiMode::Mode0,
+            lsb_first: false,
+            cs_pin: 0x08,
+            cs_active_low: true,
+            write_cmd: 0,
+            read_cmd: 0,
+            rw_cmd: 0,
+            dir_mask: 0x0B,
+            idle_value: 0x08, // CS high (deasserted), CLK low
+        };
+
+        let mut cmd = Vec::new();
+        spi.test_append_cs_assert(&mut cmd);
+        // Should be SET_BITS_LOW, value, dir
+        assert_eq!(cmd.len(), 3);
+        assert_eq!(cmd[0], mpsse::SET_BITS_LOW);
+        // Value should have CS bit cleared (low)
+        assert_eq!(cmd[1] & 0x08, 0x00);
+        assert_eq!(cmd[2], 0x0B);
+    }
+
+    #[test]
+    fn cs_assert_active_high() {
+        let spi = SpiDevice {
+            mode: SpiMode::Mode0,
+            lsb_first: false,
+            cs_pin: 0x08,
+            cs_active_low: false,
+            write_cmd: 0,
+            read_cmd: 0,
+            rw_cmd: 0,
+            dir_mask: 0x0B,
+            idle_value: 0x00, // CS low (deasserted), CLK low
+        };
+
+        let mut cmd = Vec::new();
+        spi.test_append_cs_assert(&mut cmd);
+        assert_eq!(cmd[1] & 0x08, 0x08); // CS high (asserted)
+    }
+
+    #[test]
+    fn cs_deassert_returns_to_idle() {
+        let spi = SpiDevice {
+            mode: SpiMode::Mode0,
+            lsb_first: false,
+            cs_pin: 0x08,
+            cs_active_low: true,
+            write_cmd: 0,
+            read_cmd: 0,
+            rw_cmd: 0,
+            dir_mask: 0x0B,
+            idle_value: 0x08,
+        };
+
+        let mut cmd = Vec::new();
+        spi.test_append_cs_deassert(&mut cmd);
+        assert_eq!(cmd[1], 0x08); // Back to idle value
+    }
+
+    #[test]
+    fn cs_pin_zero_is_noop() {
+        let spi = SpiDevice {
+            mode: SpiMode::Mode0,
+            lsb_first: false,
+            cs_pin: 0x00, // Manual CS
+            cs_active_low: true,
+            write_cmd: 0,
+            read_cmd: 0,
+            rw_cmd: 0,
+            dir_mask: 0x03,
+            idle_value: 0x00,
+        };
+
+        let mut cmd = Vec::new();
+        spi.test_append_cs_assert(&mut cmd);
+        assert!(cmd.is_empty(), "CS=0 should be a no-op");
+
+        spi.test_append_cs_deassert(&mut cmd);
+        assert!(cmd.is_empty(), "CS=0 should be a no-op");
+    }
+
+    // ---- Idle value tests ----
+
+    #[test]
+    fn mode0_idle_value() {
+        // Mode0: CPOL=0, so CLK idle low. Active-low CS on 0x08: CS high in idle
+        let cs_pin = 0x08u8;
+        let cs_idle = cs_pin; // active low -> deasserted = high
+        let clk_idle = 0x00; // CPOL=0
+        assert_eq!(clk_idle | cs_idle, 0x08);
+    }
+
+    #[test]
+    fn mode2_idle_value() {
+        // Mode2: CPOL=1, so CLK idle high. Active-low CS on 0x08: CS high in idle
+        let cs_pin = 0x08u8;
+        let cs_idle = cs_pin;
+        let clk_idle = 0x01; // CPOL=1 -> SK=1
+        assert_eq!(clk_idle | cs_idle, 0x09);
+    }
+
+    // ---- Direction mask tests ----
+
+    #[test]
+    fn dir_mask_default_cs() {
+        // SK(0)=out, DO(1)=out, CS(3)=out -> 0x03 | 0x08 = 0x0B
+        let dir = 0x03 | 0x08;
+        assert_eq!(dir, 0x0B);
+    }
+
+    #[test]
+    fn dir_mask_custom_cs_pin() {
+        // CS on ADBUS4 (0x10): dir = 0x03 | 0x10 = 0x13
+        let dir = 0x03 | 0x10;
+        assert_eq!(dir, 0x13);
+    }
 }

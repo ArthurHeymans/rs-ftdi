@@ -1,2 +1,9 @@
 /target
 Cargo.lock
+
+# Reference C source (not part of the crate)
+libftdi1-1.5/
+libftdi1-1.5.tar.bz2
+
+# Compiler temp files
+src/rust_out.long-type-*.txt
