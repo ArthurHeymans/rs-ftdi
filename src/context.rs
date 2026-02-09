@@ -4,11 +4,13 @@
 //! configured FTDI USB device and provides methods for serial communication,
 //! bitbang/MPSSE mode, flow control, and EEPROM access.
 
-use std::io;
-use std::time::Duration;
+use core::time::Duration;
 
 use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
-use nusb::{self, DeviceInfo, MaybeFuture};
+#[cfg(feature = "is_sync")]
+use nusb::MaybeFuture;
+
+use maybe_async::maybe_async;
 
 use crate::baudrate;
 use crate::constants::*;
@@ -21,6 +23,41 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Default read/write buffer chunk size.
 const DEFAULT_CHUNKSIZE: usize = 4096;
+
+/// Macro for synchronous/asynchronous endpoint completion.
+///
+/// In sync mode (`is_sync`), uses `wait_next_complete` with a timeout.
+/// In async mode (WASM), uses `.next_complete().await`.
+macro_rules! ep_wait {
+    ($ep:expr, $timeout:expr) => {{
+        #[cfg(feature = "is_sync")]
+        {
+            $ep.wait_next_complete($timeout)
+        }
+        #[cfg(not(feature = "is_sync"))]
+        {
+            Some($ep.next_complete().await)
+        }
+    }};
+}
+
+/// Macro for synchronous/asynchronous completion of nusb `MaybeFuture` values.
+///
+/// nusb control transfer methods return `impl MaybeFuture + IntoFuture`.
+/// In sync mode, we must call `.wait()` to resolve them synchronously.
+/// In async mode, we use `.await`.
+macro_rules! nusb_await {
+    ($expr:expr) => {{
+        #[cfg(feature = "is_sync")]
+        {
+            $expr.wait()
+        }
+        #[cfg(not(feature = "is_sync"))]
+        {
+            $expr.await
+        }
+    }};
+}
 
 /// An opened FTDI USB device.
 ///
@@ -41,12 +78,16 @@ const DEFAULT_CHUNKSIZE: usize = 4096;
 ///
 /// # Implements `Read` and `Write`
 ///
-/// `FtdiDevice` implements [`std::io::Read`] and [`std::io::Write`], so you
-/// can use it anywhere those traits are expected.
+/// On native builds, `FtdiDevice` implements [`std::io::Read`] and [`std::io::Write`],
+/// so you can use it anywhere those traits are expected.
 pub struct FtdiDevice {
     #[allow(dead_code)] // Kept to ensure the USB device stays open
     device: nusb::Device,
     interface: nusb::Interface,
+
+    // Bulk endpoints — stored as struct fields for both native and WASM
+    write_endpoint: nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::Out>,
+    read_endpoint: nusb::Endpoint<nusb::transfer::Bulk, nusb::transfer::In>,
 
     // Chip identification
     chip_type: ChipType,
@@ -69,15 +110,15 @@ pub struct FtdiDevice {
     max_packet_size: usize,
     interface_num: u8,
     usb_index: u16,
-    write_ep: u8, // bulk OUT endpoint (host -> device, for writing)
-    read_ep: u8,  // bulk IN endpoint (device -> host, for reading)
+    write_ep: u8, // bulk OUT endpoint address
+    read_ep: u8,  // bulk IN endpoint address
 
     // EEPROM
     pub(crate) eeprom: FtdiEeprom,
 }
 
-impl std::fmt::Debug for FtdiDevice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for FtdiDevice {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FtdiDevice")
             .field("chip_type", &self.chip_type)
             .field("baudrate", &self.baudrate)
@@ -88,8 +129,9 @@ impl std::fmt::Debug for FtdiDevice {
     }
 }
 
-// ---- Construction / Opening ----
+// ---- Native-only construction / Opening ----
 
+#[cfg(feature = "std")]
 impl FtdiDevice {
     /// Open the first FTDI device matching the given vendor and product IDs.
     ///
@@ -133,7 +175,7 @@ impl FtdiDevice {
     }
 
     /// Open a device from an already-discovered [`nusb::DeviceInfo`].
-    pub fn from_device_info(dev_info: DeviceInfo, iface: Interface) -> Result<Self> {
+    pub fn from_device_info(dev_info: nusb::DeviceInfo, iface: Interface) -> Result<Self> {
         let config = iface.config();
 
         let device = dev_info.open().wait()?;
@@ -143,23 +185,19 @@ impl FtdiDevice {
             .detach_and_claim_interface(config.interface_num)
             .wait()?;
 
+        let write_endpoint = interface
+            .endpoint::<nusb::transfer::Bulk, nusb::transfer::Out>(config.write_ep)
+            .map_err(Error::Usb)?;
+        let read_endpoint = interface
+            .endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(config.read_ep)
+            .map_err(Error::Usb)?;
+
         // Auto-detect chip type from bcdDevice
         let desc = device.device_descriptor();
         let bcd = desc.device_version();
         let has_serial = desc.serial_number_string_index().is_some();
 
-        let chip_type = match bcd {
-            0x0400 => ChipType::Bm,
-            0x0200 if !has_serial => ChipType::Bm, // Bug in BM: bcdDevice=0x200 when serial==0
-            0x0200 => ChipType::Am,
-            0x0500 => ChipType::Ft2232C,
-            0x0600 => ChipType::Ft232R,
-            0x0700 => ChipType::Ft2232H,
-            0x0800 => ChipType::Ft4232H,
-            0x0900 => ChipType::Ft232H,
-            0x1000 => ChipType::Ft230X,
-            _ => ChipType::Bm, // Default fallback
-        };
+        let chip_type = detect_chip_type(bcd, has_serial);
 
         // Determine max packet size from descriptors
         let max_packet_size = determine_max_packet_size(&device, chip_type, config.interface_num);
@@ -167,6 +205,8 @@ impl FtdiDevice {
         let mut ftdi = Self {
             device,
             interface,
+            write_endpoint,
+            read_endpoint,
             chip_type,
             baudrate: 0,
             bitbang_enabled: false,
@@ -194,7 +234,135 @@ impl FtdiDevice {
 
         Ok(ftdi)
     }
+}
 
+// ---- WASM-only construction ----
+
+#[cfg(all(feature = "wasm", not(feature = "is_sync")))]
+impl FtdiDevice {
+    /// Show the WebUSB device picker filtered by common FTDI VID/PIDs.
+    ///
+    /// Returns a [`nusb::DeviceInfo`] that can be passed to [`open`](Self::open_wasm).
+    #[cfg(target_arch = "wasm32")]
+    pub async fn request_device() -> Result<nusb::DeviceInfo> {
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen_futures::JsFuture;
+        use web_sys::{UsbDevice, UsbDeviceFilter, UsbDeviceRequestOptions};
+
+        let usb = web_sys::window()
+            .ok_or(Error::DeviceNotFound)?
+            .navigator()
+            .usb();
+
+        let filters = js_sys::Array::new();
+
+        // Common FTDI PIDs
+        let pids: &[u16] = &[
+            0x6001, // FT232
+            0x6010, // FT2232
+            0x6011, // FT4232
+            0x6014, // FT232H
+            0x6015, // FT230X
+        ];
+
+        for &pid in pids {
+            let filter = UsbDeviceFilter::new();
+            filter.set_vendor_id(FTDI_VID);
+            filter.set_product_id(pid);
+            filters.push(&filter);
+        }
+
+        let options = UsbDeviceRequestOptions::new(&filters);
+
+        let device_promise = usb.request_device(&options);
+        let device_js = JsFuture::from(device_promise)
+            .await
+            .map_err(|e| Error::OpenFailed(format!("WebUSB request failed: {:?}", e)))?;
+
+        let device: UsbDevice = device_js
+            .dyn_into()
+            .map_err(|_| Error::OpenFailed("Failed to get USB device".to_string()))?;
+
+        let device_info = nusb::device_info_from_webusb(device)
+            .await
+            .map_err(|e| Error::OpenFailed(format!("Failed to get device info: {}", e)))?;
+
+        Ok(device_info)
+    }
+
+    /// Open an FTDI device from a [`nusb::DeviceInfo`] (async, for WASM).
+    pub async fn open_wasm(dev_info: nusb::DeviceInfo, iface: Interface) -> Result<Self> {
+        let config = iface.config();
+
+        let device = dev_info.open().await.map_err(Error::Usb)?;
+
+        let interface = device
+            .claim_interface(config.interface_num)
+            .await
+            .map_err(Error::Usb)?;
+
+        let write_endpoint = interface
+            .endpoint::<nusb::transfer::Bulk, nusb::transfer::Out>(config.write_ep)
+            .map_err(Error::Usb)?;
+        let read_endpoint = interface
+            .endpoint::<nusb::transfer::Bulk, nusb::transfer::In>(config.read_ep)
+            .map_err(Error::Usb)?;
+
+        // Auto-detect chip type from bcdDevice
+        let desc = device.device_descriptor();
+        let bcd = desc.device_version();
+        let has_serial = desc.serial_number_string_index().is_some();
+
+        let chip_type = detect_chip_type(bcd, has_serial);
+
+        let max_packet_size = determine_max_packet_size(&device, chip_type, config.interface_num);
+
+        let mut ftdi = Self {
+            device,
+            interface,
+            write_endpoint,
+            read_endpoint,
+            chip_type,
+            baudrate: 0,
+            bitbang_enabled: false,
+            bitbang_mode: BitMode::Reset,
+            read_timeout: DEFAULT_TIMEOUT,
+            write_timeout: DEFAULT_TIMEOUT,
+            readbuffer: vec![0u8; DEFAULT_CHUNKSIZE],
+            readbuffer_offset: 0,
+            readbuffer_remaining: 0,
+            readbuffer_chunksize: DEFAULT_CHUNKSIZE,
+            writebuffer_chunksize: DEFAULT_CHUNKSIZE,
+            max_packet_size,
+            interface_num: config.interface_num,
+            usb_index: config.usb_index,
+            write_ep: config.write_ep,
+            read_ep: config.read_ep,
+            eeprom: FtdiEeprom::default(),
+        };
+
+        // Reset device
+        ftdi.usb_reset().await?;
+
+        // Set default baud rate
+        ftdi.set_baudrate(9600).await?;
+
+        Ok(ftdi)
+    }
+
+    /// Async shutdown — WASM equivalent of Drop.
+    ///
+    /// Should be called before the device is dropped in WASM, since async Drop
+    /// is not available in Rust.
+    pub async fn shutdown(&mut self) {
+        // Best-effort cleanup
+        let _ = self.flush_all().await;
+    }
+}
+
+// ---- Accessors (always available) ----
+
+impl FtdiDevice {
     /// The detected FTDI chip type.
     pub fn chip_type(&self) -> ChipType {
         self.chip_type
@@ -259,45 +427,42 @@ impl FtdiDevice {
     }
 
     /// Send a vendor OUT control transfer to the device.
-    pub(crate) fn control_out(&self, request: u8, value: u16, index: u16) -> Result<()> {
-        self.interface
-            .control_out(
-                ControlOut {
-                    control_type: ControlType::Vendor,
-                    recipient: Recipient::Device,
-                    request,
-                    value,
-                    index,
-                    data: &[],
-                },
-                self.write_timeout,
-            )
-            .wait()?;
+    #[maybe_async]
+    pub(crate) async fn control_out(&self, request: u8, value: u16, index: u16) -> Result<()> {
+        nusb_await!(self.interface.control_out(
+            ControlOut {
+                control_type: ControlType::Vendor,
+                recipient: Recipient::Device,
+                request,
+                value,
+                index,
+                data: &[],
+            },
+            self.write_timeout,
+        ))?;
         Ok(())
     }
 
     /// Send a vendor IN control transfer to the device.
-    pub(crate) fn control_in(
+    #[maybe_async]
+    pub(crate) async fn control_in(
         &self,
         request: u8,
         value: u16,
         index: u16,
         length: u16,
     ) -> Result<Vec<u8>> {
-        let data = self
-            .interface
-            .control_in(
-                ControlIn {
-                    control_type: ControlType::Vendor,
-                    recipient: Recipient::Device,
-                    request,
-                    value,
-                    index,
-                    length,
-                },
-                self.read_timeout,
-            )
-            .wait()?;
+        let data = nusb_await!(self.interface.control_in(
+            ControlIn {
+                control_type: ControlType::Vendor,
+                recipient: Recipient::Device,
+                request,
+                value,
+                index,
+                length,
+            },
+            self.read_timeout,
+        ))?;
         Ok(data)
     }
 }
@@ -309,8 +474,10 @@ impl FtdiDevice {
     ///
     /// This resets the device to its default state. The internal read buffer
     /// is invalidated.
-    pub fn usb_reset(&mut self) -> Result<()> {
-        self.control_out(SIO_RESET_REQUEST, SIO_RESET_SIO, self.usb_index)?;
+    #[maybe_async]
+    pub async fn usb_reset(&mut self) -> Result<()> {
+        self.control_out(SIO_RESET_REQUEST, SIO_RESET_SIO, self.usb_index)
+            .await?;
         self.readbuffer_offset = 0;
         self.readbuffer_remaining = 0;
         Ok(())
@@ -320,8 +487,10 @@ impl FtdiDevice {
     ///
     /// Clears data in the chip's RX FIFO (data flowing from the serial
     /// device toward the host) and the internal software read buffer.
-    pub fn flush_rx(&mut self) -> Result<()> {
-        self.control_out(SIO_RESET_REQUEST, SIO_TCIFLUSH, self.usb_index)?;
+    #[maybe_async]
+    pub async fn flush_rx(&mut self) -> Result<()> {
+        self.control_out(SIO_RESET_REQUEST, SIO_TCIFLUSH, self.usb_index)
+            .await?;
         self.readbuffer_offset = 0;
         self.readbuffer_remaining = 0;
         Ok(())
@@ -331,17 +500,20 @@ impl FtdiDevice {
     ///
     /// Clears data in the chip's TX FIFO (data flowing from the host
     /// toward the serial device).
-    pub fn flush_tx(&mut self) -> Result<()> {
-        self.control_out(SIO_RESET_REQUEST, SIO_TCOFLUSH, self.usb_index)?;
+    #[maybe_async]
+    pub async fn flush_tx(&mut self) -> Result<()> {
+        self.control_out(SIO_RESET_REQUEST, SIO_TCOFLUSH, self.usb_index)
+            .await?;
         Ok(())
     }
 
     /// Flush both RX and TX buffers.
     ///
     /// Matches the order of `ftdi_tcioflush()`: TX first, then RX.
-    pub fn flush_all(&mut self) -> Result<()> {
-        self.flush_tx()?;
-        self.flush_rx()
+    #[maybe_async]
+    pub async fn flush_all(&mut self) -> Result<()> {
+        self.flush_tx().await?;
+        self.flush_rx().await
     }
 }
 
@@ -356,7 +528,8 @@ impl FtdiDevice {
     ///
     /// When bitbang mode is enabled, the baud rate is internally multiplied
     /// by 4 (the FTDI chip's bitbang clock runs at 4x the serial baud rate).
-    pub fn set_baudrate(&mut self, baudrate: u32) -> Result<()> {
+    #[maybe_async]
+    pub async fn set_baudrate(&mut self, baudrate: u32) -> Result<()> {
         let effective = if self.bitbang_enabled {
             baudrate * 4
         } else {
@@ -381,23 +554,27 @@ impl FtdiDevice {
             });
         }
 
-        self.control_out(SIO_SET_BAUDRATE_REQUEST, result.value, result.index)?;
+        self.control_out(SIO_SET_BAUDRATE_REQUEST, result.value, result.index)
+            .await?;
         self.baudrate = baudrate;
         Ok(())
     }
 
     /// Set the serial line properties (data bits, stop bits, parity).
-    pub fn set_line_property(
+    #[maybe_async]
+    pub async fn set_line_property(
         &self,
         bits: DataBits,
         stop_bits: StopBits,
         parity: Parity,
     ) -> Result<()> {
         self.set_line_property_with_break(bits, stop_bits, parity, BreakType::Off)
+            .await
     }
 
     /// Set the serial line properties including break control.
-    pub fn set_line_property_with_break(
+    #[maybe_async]
+    pub async fn set_line_property_with_break(
         &self,
         bits: DataBits,
         stop_bits: StopBits,
@@ -410,6 +587,7 @@ impl FtdiDevice {
             | (break_type.wire_value() << 14);
 
         self.control_out(SIO_SET_DATA_REQUEST, value, self.usb_index)
+            .await
     }
 
     /// Set the read timeout for USB transfers.
@@ -437,36 +615,33 @@ impl FtdiDevice {
 
 impl FtdiDevice {
     /// Set the flow control mode.
-    ///
-    /// Supports all four modes: disabled, RTS/CTS, DTR/DSR, and XON/XOFF.
-    ///
-    /// ```no_run
-    /// # use ftdi::{FtdiDevice, FlowControl};
-    /// # let mut dev = FtdiDevice::open(0x0403, 0x6001)?;
-    /// // Hardware flow control
-    /// dev.set_flow_control(FlowControl::RtsCts)?;
-    ///
-    /// // Software flow control with standard characters
-    /// dev.set_flow_control(FlowControl::XonXoff { xon: 0x11, xoff: 0x13 })?;
-    /// # Ok::<(), ftdi::Error>(())
-    /// ```
-    pub fn set_flow_control(&self, flow: FlowControl) -> Result<()> {
+    #[maybe_async]
+    pub async fn set_flow_control(&self, flow: FlowControl) -> Result<()> {
         match flow {
-            FlowControl::Disabled => self.control_out(
-                SIO_SET_FLOW_CTRL_REQUEST,
-                0,
-                SIO_DISABLE_FLOW_CTRL | self.usb_index,
-            ),
-            FlowControl::RtsCts => self.control_out(
-                SIO_SET_FLOW_CTRL_REQUEST,
-                0,
-                SIO_RTS_CTS_HS | self.usb_index,
-            ),
-            FlowControl::DtrDsr => self.control_out(
-                SIO_SET_FLOW_CTRL_REQUEST,
-                0,
-                SIO_DTR_DSR_HS | self.usb_index,
-            ),
+            FlowControl::Disabled => {
+                self.control_out(
+                    SIO_SET_FLOW_CTRL_REQUEST,
+                    0,
+                    SIO_DISABLE_FLOW_CTRL | self.usb_index,
+                )
+                .await
+            }
+            FlowControl::RtsCts => {
+                self.control_out(
+                    SIO_SET_FLOW_CTRL_REQUEST,
+                    0,
+                    SIO_RTS_CTS_HS | self.usb_index,
+                )
+                .await
+            }
+            FlowControl::DtrDsr => {
+                self.control_out(
+                    SIO_SET_FLOW_CTRL_REQUEST,
+                    0,
+                    SIO_DTR_DSR_HS | self.usb_index,
+                )
+                .await
+            }
             FlowControl::XonXoff { xon, xoff } => {
                 let xonxoff = (xon as u16) | ((xoff as u16) << 8);
                 self.control_out(
@@ -474,40 +649,45 @@ impl FtdiDevice {
                     xonxoff,
                     SIO_XON_XOFF_HS | self.usb_index,
                 )
+                .await
             }
         }
     }
 
     /// Set XON/XOFF software flow control with custom characters.
-    ///
-    /// This is a convenience method equivalent to
-    /// `set_flow_control(FlowControl::XonXoff { xon, xoff })`.
-    pub fn set_flow_control_xonxoff(&self, xon: u8, xoff: u8) -> Result<()> {
+    #[maybe_async]
+    pub async fn set_flow_control_xonxoff(&self, xon: u8, xoff: u8) -> Result<()> {
         self.set_flow_control(FlowControl::XonXoff { xon, xoff })
+            .await
     }
 
     /// Set the DTR (Data Terminal Ready) line state.
-    pub fn set_dtr(&self, state: bool) -> Result<()> {
+    #[maybe_async]
+    pub async fn set_dtr(&self, state: bool) -> Result<()> {
         let val = if state {
             SIO_SET_DTR_HIGH
         } else {
             SIO_SET_DTR_LOW
         };
         self.control_out(SIO_SET_MODEM_CTRL_REQUEST, val, self.usb_index)
+            .await
     }
 
     /// Set the RTS (Request To Send) line state.
-    pub fn set_rts(&self, state: bool) -> Result<()> {
+    #[maybe_async]
+    pub async fn set_rts(&self, state: bool) -> Result<()> {
         let val = if state {
             SIO_SET_RTS_HIGH
         } else {
             SIO_SET_RTS_LOW
         };
         self.control_out(SIO_SET_MODEM_CTRL_REQUEST, val, self.usb_index)
+            .await
     }
 
     /// Set both DTR and RTS lines in a single USB transfer.
-    pub fn set_dtr_rts(&self, dtr: bool, rts: bool) -> Result<()> {
+    #[maybe_async]
+    pub async fn set_dtr_rts(&self, dtr: bool, rts: bool) -> Result<()> {
         let mut val = if dtr {
             SIO_SET_DTR_HIGH
         } else {
@@ -519,32 +699,31 @@ impl FtdiDevice {
             SIO_SET_RTS_LOW
         };
         self.control_out(SIO_SET_MODEM_CTRL_REQUEST, val, self.usb_index)
+            .await
     }
 
     /// Set the special event character.
-    ///
-    /// When `enable` is true and this character is received, the chip
-    /// immediately returns the data up to and including this character.
-    pub fn set_event_char(&self, ch: u8, enable: bool) -> Result<()> {
+    #[maybe_async]
+    pub async fn set_event_char(&self, ch: u8, enable: bool) -> Result<()> {
         let val = (ch as u16) | if enable { 1 << 8 } else { 0 };
         self.control_out(SIO_SET_EVENT_CHAR_REQUEST, val, self.usb_index)
+            .await
     }
 
     /// Set the error character.
-    ///
-    /// When enabled, this character is inserted into the data stream
-    /// when a parity error is detected.
-    pub fn set_error_char(&self, ch: u8, enable: bool) -> Result<()> {
+    #[maybe_async]
+    pub async fn set_error_char(&self, ch: u8, enable: bool) -> Result<()> {
         let val = (ch as u16) | if enable { 1 << 8 } else { 0 };
         self.control_out(SIO_SET_ERROR_CHAR_REQUEST, val, self.usb_index)
+            .await
     }
 
     /// Poll the modem status.
-    ///
-    /// Returns the current state of the modem control lines and line
-    /// status register. This bypasses the normal read buffer.
-    pub fn poll_modem_status(&self) -> Result<ModemStatus> {
-        let data = self.control_in(SIO_POLL_MODEM_STATUS_REQUEST, 0, self.usb_index, 2)?;
+    #[maybe_async]
+    pub async fn poll_modem_status(&self) -> Result<ModemStatus> {
+        let data = self
+            .control_in(SIO_POLL_MODEM_STATUS_REQUEST, 0, self.usb_index, 2)
+            .await?;
         if data.len() < 2 {
             return Err(Error::DeviceUnavailable);
         }
@@ -557,10 +736,8 @@ impl FtdiDevice {
 
 impl FtdiDevice {
     /// Set the latency timer value (1-255 ms).
-    ///
-    /// The FTDI chip holds data in its internal buffer for this duration
-    /// if the buffer is not full, to reduce USB bus load.
-    pub fn set_latency_timer(&self, latency_ms: u8) -> Result<()> {
+    #[maybe_async]
+    pub async fn set_latency_timer(&self, latency_ms: u8) -> Result<()> {
         if latency_ms < 1 {
             return Err(Error::InvalidArgument("latency must be between 1 and 255"));
         }
@@ -569,11 +746,15 @@ impl FtdiDevice {
             latency_ms as u16,
             self.usb_index,
         )
+        .await
     }
 
     /// Get the current latency timer value in milliseconds.
-    pub fn latency_timer(&self) -> Result<u8> {
-        let data = self.control_in(SIO_GET_LATENCY_TIMER_REQUEST, 0, self.usb_index, 1)?;
+    #[maybe_async]
+    pub async fn latency_timer(&self) -> Result<u8> {
+        let data = self
+            .control_in(SIO_GET_LATENCY_TIMER_REQUEST, 0, self.usb_index, 1)
+            .await?;
         if data.is_empty() {
             return Err(Error::DeviceUnavailable);
         }
@@ -585,15 +766,11 @@ impl FtdiDevice {
 
 impl FtdiDevice {
     /// Enable a bitbang or MPSSE mode.
-    ///
-    /// The `bitmask` configures which pins are outputs (bit = 1) and which
-    /// are inputs (bit = 0). The `mode` selects the operating mode.
-    ///
-    /// To return to normal serial mode, call [`disable_bitbang`](Self::disable_bitbang)
-    /// or use `BitMode::Reset`.
-    pub fn set_bitmode(&mut self, bitmask: u8, mode: BitMode) -> Result<()> {
+    #[maybe_async]
+    pub async fn set_bitmode(&mut self, bitmask: u8, mode: BitMode) -> Result<()> {
         let val = (bitmask as u16) | ((mode.wire_value() as u16) << 8);
-        self.control_out(SIO_SET_BITMODE_REQUEST, val, self.usb_index)?;
+        self.control_out(SIO_SET_BITMODE_REQUEST, val, self.usb_index)
+            .await?;
 
         self.bitbang_mode = mode;
         self.bitbang_enabled = mode != BitMode::Reset;
@@ -601,15 +778,17 @@ impl FtdiDevice {
     }
 
     /// Disable bitbang mode and return to normal serial/FIFO operation.
-    pub fn disable_bitbang(&mut self) -> Result<()> {
-        self.set_bitmode(0, BitMode::Reset)
+    #[maybe_async]
+    pub async fn disable_bitbang(&mut self) -> Result<()> {
+        self.set_bitmode(0, BitMode::Reset).await
     }
 
     /// Read the current pin states directly, bypassing the read buffer.
-    ///
-    /// This is useful in bitbang mode to sample the instantaneous pin values.
-    pub fn read_pins(&self) -> Result<u8> {
-        let data = self.control_in(SIO_READ_PINS_REQUEST, 0, self.usb_index, 1)?;
+    #[maybe_async]
+    pub async fn read_pins(&self) -> Result<u8> {
+        let data = self
+            .control_in(SIO_READ_PINS_REQUEST, 0, self.usb_index, 1)
+            .await?;
         if data.is_empty() {
             return Err(Error::DeviceUnavailable);
         }
@@ -621,10 +800,6 @@ impl FtdiDevice {
 
 impl FtdiDevice {
     /// Set the read buffer chunk size.
-    ///
-    /// This controls how many bytes are requested in each USB bulk read.
-    /// The default is 4096. The internal read buffer is reallocated to
-    /// match.
     pub fn set_read_chunksize(&mut self, chunksize: usize) {
         self.readbuffer_offset = 0;
         self.readbuffer_remaining = 0;
@@ -638,9 +813,6 @@ impl FtdiDevice {
     }
 
     /// Set the write buffer chunk size.
-    ///
-    /// This controls the maximum number of bytes sent in each USB bulk write.
-    /// The default is 4096.
     pub fn set_write_chunksize(&mut self, chunksize: usize) {
         self.writebuffer_chunksize = chunksize;
     }
@@ -658,14 +830,9 @@ impl FtdiDevice {
     ///
     /// Data is sent in chunks of [`write_chunksize`](Self::write_chunksize).
     /// Returns the number of bytes written.
-    pub fn write_data(&mut self, buf: &[u8]) -> Result<usize> {
-        use nusb::transfer::{Bulk, Out};
-
+    #[maybe_async]
+    pub async fn write_data(&mut self, buf: &[u8]) -> Result<usize> {
         let mut offset = 0;
-        let mut ep = self
-            .interface
-            .endpoint::<Bulk, Out>(self.write_ep)
-            .map_err(Error::Usb)?;
 
         while offset < buf.len() {
             let end = (offset + self.writebuffer_chunksize).min(buf.len());
@@ -674,7 +841,10 @@ impl FtdiDevice {
             let mut transfer_buf = nusb::transfer::Buffer::new(chunk.len());
             transfer_buf.extend_from_slice(chunk);
 
-            let completion = ep.transfer_blocking(transfer_buf, self.write_timeout);
+            self.write_endpoint.submit(transfer_buf);
+
+            let completion = ep_wait!(self.write_endpoint, self.write_timeout)
+                .ok_or_else(|| Error::Transfer(nusb::transfer::TransferError::Cancelled))?;
             completion.status.map_err(Error::Transfer)?;
             offset += completion.actual_len;
         }
@@ -689,9 +859,8 @@ impl FtdiDevice {
     /// read into `buf`.
     ///
     /// Returns 0 if no data is available (the chip only sent status bytes).
-    pub fn read_data(&mut self, buf: &mut [u8]) -> Result<usize> {
-        use nusb::transfer::{Bulk, In};
-
+    #[maybe_async]
+    pub async fn read_data(&mut self, buf: &mut [u8]) -> Result<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
@@ -712,15 +881,12 @@ impl FtdiDevice {
             return Ok(n);
         }
 
-        // Issue a USB bulk read
-        let mut ep = self
-            .interface
-            .endpoint::<Bulk, In>(self.read_ep)
-            .map_err(Error::Usb)?;
-
+        // Issue a USB bulk read via submit + ep_wait
         let transfer_buf = nusb::transfer::Buffer::new(self.readbuffer_chunksize);
+        self.read_endpoint.submit(transfer_buf);
 
-        let completion = ep.transfer_blocking(transfer_buf, self.read_timeout);
+        let completion = ep_wait!(self.read_endpoint, self.read_timeout)
+            .ok_or_else(|| Error::Transfer(nusb::transfer::TransferError::Cancelled))?;
         completion.status.map_err(Error::Transfer)?;
 
         let actual_length = completion.actual_len;
@@ -758,10 +924,11 @@ impl FtdiDevice {
     }
 
     /// Write all bytes to the device, retrying until complete.
-    pub fn write_all(&mut self, buf: &[u8]) -> Result<()> {
+    #[maybe_async]
+    pub async fn write_all(&mut self, buf: &[u8]) -> Result<()> {
         let mut offset = 0;
         while offset < buf.len() {
-            let n = self.write_data(&buf[offset..])?;
+            let n = self.write_data(&buf[offset..]).await?;
             if n == 0 {
                 return Err(Error::WriteZero);
             }
@@ -773,9 +940,6 @@ impl FtdiDevice {
 
 /// Strip the 2-byte modem status header from each packet in a raw USB bulk
 /// read result. Returns the total number of payload bytes after stripping.
-///
-/// The data is compacted in-place: payload bytes are moved to fill the
-/// gaps left by removed status bytes.
 fn strip_modem_status(data: &mut [u8], packet_size: usize) -> usize {
     let total = data.len();
     if total <= 2 {
@@ -791,7 +955,6 @@ fn strip_modem_status(data: &mut [u8], packet_size: usize) -> usize {
         let pkt_len = pkt_end - pkt_start;
 
         if pkt_len <= 2 {
-            // Packet is only status bytes, skip entirely
             continue;
         }
 
@@ -799,7 +962,6 @@ fn strip_modem_status(data: &mut [u8], packet_size: usize) -> usize {
         let payload_len = pkt_len - 2;
 
         if write_pos != payload_start {
-            // Need to move data
             data.copy_within(payload_start..payload_start + payload_len, write_pos);
         }
         write_pos += payload_len;
@@ -808,16 +970,30 @@ fn strip_modem_status(data: &mut [u8], packet_size: usize) -> usize {
     write_pos
 }
 
+/// Detect chip type from bcdDevice version.
+fn detect_chip_type(bcd: u16, has_serial: bool) -> ChipType {
+    match bcd {
+        0x0400 => ChipType::Bm,
+        0x0200 if !has_serial => ChipType::Bm,
+        0x0200 => ChipType::Am,
+        0x0500 => ChipType::Ft2232C,
+        0x0600 => ChipType::Ft232R,
+        0x0700 => ChipType::Ft2232H,
+        0x0800 => ChipType::Ft4232H,
+        0x0900 => ChipType::Ft232H,
+        0x1000 => ChipType::Ft230X,
+        _ => ChipType::Bm,
+    }
+}
+
 /// Determine the maximum packet size for a device.
 fn determine_max_packet_size(
     device: &nusb::Device,
     chip_type: ChipType,
     interface_num: u8,
 ) -> usize {
-    // Default based on chip type
     let default_size = if chip_type.is_h_type() { 512 } else { 64 };
 
-    // Try to read from the configuration descriptor
     let config = match device.active_configuration() {
         Ok(c) => c,
         Err(_) => return default_size,
@@ -841,11 +1017,8 @@ fn determine_max_packet_size(
 
 impl FtdiDevice {
     /// Read data with retry on transient USB errors.
-    ///
-    /// Retries up to `max_retries` times if a USB transfer error occurs.
-    /// Waits `retry_delay` between attempts. Does NOT retry on non-USB
-    /// errors (e.g., invalid arguments).
-    pub fn read_data_retry(
+    #[maybe_async]
+    pub async fn read_data_retry(
         &mut self,
         buf: &mut [u8],
         max_retries: usize,
@@ -853,25 +1026,21 @@ impl FtdiDevice {
     ) -> Result<usize> {
         let mut last_err = None;
         for _ in 0..=max_retries {
-            match self.read_data(buf) {
+            match self.read_data(buf).await {
                 Ok(n) => return Ok(n),
                 Err(e @ Error::Transfer(_)) => {
                     last_err = Some(e);
-                    std::thread::sleep(retry_delay);
+                    crate::sleep_util::sleep(retry_delay).await;
                 }
                 Err(e) => return Err(e),
             }
         }
-        // Unwrap is safe: the loop runs at least once, so last_err is always Some
-        // if we reach here.
         Err(last_err.unwrap())
     }
 
     /// Write data with retry on transient USB errors.
-    ///
-    /// Retries up to `max_retries` times if a USB transfer error occurs.
-    /// Waits `retry_delay` between attempts.
-    pub fn write_data_retry(
+    #[maybe_async]
+    pub async fn write_data_retry(
         &mut self,
         buf: &[u8],
         max_retries: usize,
@@ -879,74 +1048,59 @@ impl FtdiDevice {
     ) -> Result<usize> {
         let mut last_err = None;
         for _ in 0..=max_retries {
-            match self.write_data(buf) {
+            match self.write_data(buf).await {
                 Ok(n) => return Ok(n),
                 Err(e @ Error::Transfer(_)) => {
                     last_err = Some(e);
-                    std::thread::sleep(retry_delay);
+                    crate::sleep_util::sleep(retry_delay).await;
                 }
                 Err(e) => return Err(e),
             }
         }
-        // Unwrap is safe: the loop runs at least once, so last_err is always Some
-        // if we reach here.
         Err(last_err.unwrap())
     }
 
     /// Check if the USB device is still connected.
-    ///
-    /// Attempts a lightweight control transfer (reading the latency timer)
-    /// to verify the device is responding. Returns `true` if the device
-    /// responded, `false` if any USB error occurred.
-    pub fn is_connected(&self) -> bool {
-        // Try reading the latency timer — a very lightweight operation
+    #[maybe_async]
+    pub async fn is_connected(&self) -> bool {
         self.control_in(SIO_GET_LATENCY_TIMER_REQUEST, 0, self.usb_index, 1)
+            .await
             .is_ok()
     }
 
     /// Attempt to recover from a USB error by resetting the device.
-    ///
-    /// Performs a USB device reset and re-applies the current baud rate
-    /// and bitbang mode (if enabled).
-    ///
-    /// # Limitations
-    ///
-    /// Only baud rate and bitbang mode are restored. Other device
-    /// configuration — flow control, line properties (data bits, stop bits,
-    /// parity), and latency timer — will be reset to hardware defaults.
-    /// The caller should re-apply those settings after a successful recovery
-    /// if needed.
-    pub fn recover(&mut self) -> Result<()> {
-        self.usb_reset()?;
+    #[maybe_async]
+    pub async fn recover(&mut self) -> Result<()> {
+        self.usb_reset().await?;
         if self.baudrate > 0 {
             let baud = self.baudrate;
-            self.set_baudrate(baud)?;
+            self.set_baudrate(baud).await?;
         }
         if self.bitbang_enabled {
-            // Restore the bitbang mode. We use 0xFF (all outputs) as the
-            // bitmask since the original bitmask is not tracked.
             let mode = self.bitbang_mode;
-            self.set_bitmode(0xFF, mode)?;
+            self.set_bitmode(0xFF, mode).await?;
         }
         Ok(())
     }
 }
 
-// ---- std::io trait implementations ----
+// ---- std::io trait implementations (native only) ----
 
-impl io::Read for FtdiDevice {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.read_data(buf).map_err(io::Error::other)
+#[cfg(feature = "is_sync")]
+impl std::io::Read for FtdiDevice {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.read_data(buf).map_err(std::io::Error::other)
     }
 }
 
-impl io::Write for FtdiDevice {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.write_data(buf).map_err(io::Error::other)
+#[cfg(feature = "is_sync")]
+impl std::io::Write for FtdiDevice {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.write_data(buf).map_err(std::io::Error::other)
     }
 
-    fn flush(&mut self) -> io::Result<()> {
-        self.flush_tx().map_err(io::Error::other)
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flush_tx().map_err(std::io::Error::other)
     }
 }
 
@@ -956,10 +1110,9 @@ mod tests {
 
     #[test]
     fn strip_modem_status_single_packet() {
-        // Simulate a 64-byte packet with 2 status + 62 payload
         let mut data = vec![0u8; 64];
-        data[0] = 0x01; // status byte 1
-        data[1] = 0x60; // status byte 2
+        data[0] = 0x01;
+        data[1] = 0x60;
         for (i, byte) in data.iter_mut().enumerate().take(64).skip(2) {
             *byte = i as u8;
         }
@@ -974,20 +1127,18 @@ mod tests {
     #[test]
     fn strip_modem_status_multiple_packets() {
         let packet_size = 8;
-        // Two full packets: [S S 2 3 4 5 6 7] [S S A B C D E F]
         let mut data = vec![
-            0xAA, 0xBB, 2, 3, 4, 5, 6, 7, // packet 1
-            0xCC, 0xDD, 10, 11, 12, 13, 14, 15, // packet 2
+            0xAA, 0xBB, 2, 3, 4, 5, 6, 7, 0xCC, 0xDD, 10, 11, 12, 13, 14, 15,
         ];
 
         let stripped = strip_modem_status(&mut data, packet_size);
-        assert_eq!(stripped, 12); // 6 + 6 payload bytes
+        assert_eq!(stripped, 12);
         assert_eq!(&data[..12], &[2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15]);
     }
 
     #[test]
     fn strip_modem_status_short() {
-        let mut data = vec![0x01, 0x60]; // Only status bytes
+        let mut data = vec![0x01, 0x60];
         assert_eq!(strip_modem_status(&mut data, 64), 0);
     }
 
@@ -995,5 +1146,18 @@ mod tests {
     fn strip_modem_status_empty() {
         let mut data: Vec<u8> = vec![];
         assert_eq!(strip_modem_status(&mut data, 64), 0);
+    }
+
+    #[test]
+    fn detect_chip_type_known_versions() {
+        assert_eq!(detect_chip_type(0x0400, false), ChipType::Bm);
+        assert_eq!(detect_chip_type(0x0200, true), ChipType::Am);
+        assert_eq!(detect_chip_type(0x0200, false), ChipType::Bm);
+        assert_eq!(detect_chip_type(0x0500, false), ChipType::Ft2232C);
+        assert_eq!(detect_chip_type(0x0600, false), ChipType::Ft232R);
+        assert_eq!(detect_chip_type(0x0700, false), ChipType::Ft2232H);
+        assert_eq!(detect_chip_type(0x0800, false), ChipType::Ft4232H);
+        assert_eq!(detect_chip_type(0x0900, false), ChipType::Ft232H);
+        assert_eq!(detect_chip_type(0x1000, false), ChipType::Ft230X);
     }
 }
