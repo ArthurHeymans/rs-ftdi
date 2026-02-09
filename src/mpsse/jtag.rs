@@ -452,7 +452,7 @@ mod tests {
         // TMS sequence from Idle to Shift-DR: 1, 0, 0
         // LSB first encoding: bit0=1, bit1=0, bit2=0 = 0x01
         let data: u8 = 0x01;
-        assert_eq!((data >> 0) & 1, 1); // Select-DR-Scan
+        assert_eq!(data & 1, 1); // Select-DR-Scan
         assert_eq!((data >> 1) & 1, 0); // Capture-DR
         assert_eq!((data >> 2) & 1, 0); // Shift-DR
     }
@@ -462,7 +462,7 @@ mod tests {
         // TMS sequence from Idle to Shift-IR: 1, 1, 0, 0
         // LSB first encoding: bit0=1, bit1=1, bit2=0, bit3=0 = 0x03
         let data: u8 = 0x03;
-        assert_eq!((data >> 0) & 1, 1); // Select-DR-Scan
+        assert_eq!(data & 1, 1); // Select-DR-Scan
         assert_eq!((data >> 1) & 1, 1); // Select-IR-Scan
         assert_eq!((data >> 2) & 1, 0); // Capture-IR
         assert_eq!((data >> 3) & 1, 0); // Shift-IR
@@ -473,7 +473,7 @@ mod tests {
         // TMS from Exit1 to Idle: 1, 0
         // LSB first: bit0=1, bit1=0 = 0x01
         let data: u8 = 0x01;
-        assert_eq!((data >> 0) & 1, 1); // Update-DR/IR
+        assert_eq!(data & 1, 1); // Update-DR/IR
         assert_eq!((data >> 1) & 1, 0); // Run-Test/Idle
     }
 

@@ -462,6 +462,7 @@ pub(crate) fn type2bit(channel_type: u8, chip: ChipType) -> u8 {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::eeprom::decode;
@@ -739,11 +740,17 @@ mod tests {
         decode::decode(&mut decoded, ChipType::Ft232R).unwrap();
 
         // First 5 CBUS functions should survive the round trip
-        for i in 0..5 {
+        for (i, (dec, orig)) in decoded
+            .cbus_function
+            .iter()
+            .zip(cbus_orig.iter())
+            .enumerate()
+            .take(5)
+        {
             assert_eq!(
-                decoded.cbus_function[i], cbus_orig[i],
+                *dec, *orig,
                 "CBUS[{}] mismatch: decoded={}, original={}",
-                i, decoded.cbus_function[i], cbus_orig[i]
+                i, dec, orig
             );
         }
     }
