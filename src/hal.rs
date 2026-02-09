@@ -13,10 +13,10 @@
 //!
 //! | Trait | Type | Notes |
 //! |-------|------|-------|
-//! | `embedded_hal::spi::SpiDevice` | [`FtdiSpiDevice`] | Wraps [`SpiDevice`](crate::mpsse::spi::SpiDevice) + context |
-//! | `embedded_hal::i2c::I2c` | [`FtdiI2c`] | Wraps [`I2cBus`](crate::mpsse::i2c::I2cBus) + context |
-//! | `embedded_io::Read` | [`FtdiDevice`](crate::FtdiDevice) | Serial read |
-//! | `embedded_io::Write` | [`FtdiDevice`](crate::FtdiDevice) | Serial write |
+//! | `embedded_hal::spi::SpiDevice` | [`FtdiSpiDevice`] | Wraps [`SpiDevice`] + context |
+//! | `embedded_hal::i2c::I2c` | [`FtdiI2c`] | Wraps [`I2cBus`] + context |
+//! | `embedded_io::Read` | [`FtdiDevice`] | Serial read |
+//! | `embedded_io::Write` | [`FtdiDevice`] | Serial write |
 
 use crate::context::FtdiDevice;
 use crate::error::Error;
@@ -92,9 +92,9 @@ impl embedded_io::Write for FtdiDevice {
 
 /// Wrapper that implements `embedded_hal::spi::SpiDevice` for an FTDI MPSSE SPI bus.
 ///
-/// This bundles the [`SpiDevice`](crate::mpsse::spi::SpiDevice),
-/// [`MpsseContext`](crate::mpsse::MpsseContext), and
-/// [`FtdiDevice`](crate::FtdiDevice) together so the combined type
+/// This bundles the [`SpiDevice`],
+/// [`MpsseContext`], and
+/// [`FtdiDevice`] together so the combined type
 /// satisfies the `SpiDevice` trait.
 ///
 /// # Example

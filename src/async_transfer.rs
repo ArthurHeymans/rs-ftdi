@@ -430,14 +430,14 @@ mod tests {
         let mut data = vec![0u8; 64];
         data[0] = 0x01;
         data[1] = 0x60;
-        for i in 2..64 {
-            data[i] = i as u8;
+        for (i, byte) in data.iter_mut().enumerate().take(64).skip(2) {
+            *byte = i as u8;
         }
 
         let result = strip_modem_status_to_vec(&data, 64);
         assert_eq!(result.len(), 62);
-        for i in 0..62 {
-            assert_eq!(result[i], (i + 2) as u8);
+        for (i, byte) in result.iter().enumerate().take(62) {
+            assert_eq!(*byte, (i + 2) as u8);
         }
     }
 
