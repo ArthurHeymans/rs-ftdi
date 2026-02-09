@@ -24,6 +24,7 @@
 //! # Ok::<(), ftdi::Error>(())
 //! ```
 
+pub mod gpio;
 pub mod i2c;
 pub mod jtag;
 pub mod spi;
@@ -406,6 +407,19 @@ impl MpsseContext {
     /// Write raw MPSSE command bytes to the device.
     pub fn write_commands(&self, dev: &mut FtdiDevice, cmd: &[u8]) -> Result<()> {
         dev.write_all(cmd)
+    }
+
+    /// Create an `MpsseContext` for unit testing (no USB device needed).
+    #[cfg(test)]
+    pub(crate) fn test_new(is_h_type: bool) -> Self {
+        Self {
+            clock_hz: 0,
+            is_h_type,
+            gpio_low_value: 0x00,
+            gpio_low_dir: 0x00,
+            gpio_high_value: 0x00,
+            gpio_high_dir: 0x00,
+        }
     }
 }
 

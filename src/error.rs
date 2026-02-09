@@ -80,6 +80,13 @@ pub enum Error {
     /// A descriptor read failed.
     #[error("descriptor error: {0}")]
     Descriptor(#[from] nusb::GetDescriptorError),
+
+    /// A USB operation timed out.
+    ///
+    /// This is distinct from `Transfer` errors — it indicates that the
+    /// device did not respond within the configured timeout period.
+    #[error("operation timed out after {0:?}")]
+    Timeout(std::time::Duration),
 }
 
 /// A specialized `Result` type for FTDI operations.

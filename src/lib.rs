@@ -41,6 +41,8 @@ pub mod context;
 pub mod device_info;
 pub mod eeprom;
 pub mod error;
+#[cfg(feature = "embedded-hal")]
+pub mod hal;
 pub mod mpsse;
 pub mod stream;
 pub mod types;

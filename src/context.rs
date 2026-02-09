@@ -434,25 +434,52 @@ impl FtdiDevice {
 impl FtdiDevice {
     /// Set the flow control mode.
     ///
-    /// For XON/XOFF flow control, use [`set_flow_control_xonxoff`](Self::set_flow_control_xonxoff).
+    /// Supports all four modes: disabled, RTS/CTS, DTR/DSR, and XON/XOFF.
+    ///
+    /// ```no_run
+    /// # use ftdi::{FtdiDevice, FlowControl};
+    /// # let mut dev = FtdiDevice::open(0x0403, 0x6001)?;
+    /// // Hardware flow control
+    /// dev.set_flow_control(FlowControl::RtsCts)?;
+    ///
+    /// // Software flow control with standard characters
+    /// dev.set_flow_control(FlowControl::XonXoff { xon: 0x11, xoff: 0x13 })?;
+    /// # Ok::<(), ftdi::Error>(())
+    /// ```
     pub fn set_flow_control(&self, flow: FlowControl) -> Result<()> {
-        let flow_val = match flow {
-            FlowControl::Disabled => SIO_DISABLE_FLOW_CTRL,
-            FlowControl::RtsCts => SIO_RTS_CTS_HS,
-            FlowControl::DtrDsr => SIO_DTR_DSR_HS,
-        };
-
-        self.control_out(SIO_SET_FLOW_CTRL_REQUEST, 0, flow_val | self.usb_index)
+        match flow {
+            FlowControl::Disabled => self.control_out(
+                SIO_SET_FLOW_CTRL_REQUEST,
+                0,
+                SIO_DISABLE_FLOW_CTRL | self.usb_index,
+            ),
+            FlowControl::RtsCts => self.control_out(
+                SIO_SET_FLOW_CTRL_REQUEST,
+                0,
+                SIO_RTS_CTS_HS | self.usb_index,
+            ),
+            FlowControl::DtrDsr => self.control_out(
+                SIO_SET_FLOW_CTRL_REQUEST,
+                0,
+                SIO_DTR_DSR_HS | self.usb_index,
+            ),
+            FlowControl::XonXoff { xon, xoff } => {
+                let xonxoff = (xon as u16) | ((xoff as u16) << 8);
+                self.control_out(
+                    SIO_SET_FLOW_CTRL_REQUEST,
+                    xonxoff,
+                    SIO_XON_XOFF_HS | self.usb_index,
+                )
+            }
+        }
     }
 
     /// Set XON/XOFF software flow control with custom characters.
+    ///
+    /// This is a convenience method equivalent to
+    /// `set_flow_control(FlowControl::XonXoff { xon, xoff })`.
     pub fn set_flow_control_xonxoff(&self, xon: u8, xoff: u8) -> Result<()> {
-        let xonxoff = (xon as u16) | ((xoff as u16) << 8);
-        self.control_out(
-            SIO_SET_FLOW_CTRL_REQUEST,
-            xonxoff,
-            SIO_XON_XOFF_HS | self.usb_index,
-        )
+        self.set_flow_control(FlowControl::XonXoff { xon, xoff })
     }
 
     /// Set the DTR (Data Terminal Ready) line state.
@@ -804,6 +831,101 @@ fn determine_max_packet_size(
     }
 
     default_size
+}
+
+// ---- Error Recovery ----
+
+impl FtdiDevice {
+    /// Read data with retry on transient USB errors.
+    ///
+    /// Retries up to `max_retries` times if a USB transfer error occurs.
+    /// Waits `retry_delay` between attempts. Does NOT retry on non-USB
+    /// errors (e.g., invalid arguments).
+    pub fn read_data_retry(
+        &mut self,
+        buf: &mut [u8],
+        max_retries: usize,
+        retry_delay: Duration,
+    ) -> Result<usize> {
+        let mut last_err = None;
+        for _ in 0..=max_retries {
+            match self.read_data(buf) {
+                Ok(n) => return Ok(n),
+                Err(e @ Error::Transfer(_)) => {
+                    last_err = Some(e);
+                    std::thread::sleep(retry_delay);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        // Unwrap is safe: the loop runs at least once, so last_err is always Some
+        // if we reach here.
+        Err(last_err.unwrap())
+    }
+
+    /// Write data with retry on transient USB errors.
+    ///
+    /// Retries up to `max_retries` times if a USB transfer error occurs.
+    /// Waits `retry_delay` between attempts.
+    pub fn write_data_retry(
+        &mut self,
+        buf: &[u8],
+        max_retries: usize,
+        retry_delay: Duration,
+    ) -> Result<usize> {
+        let mut last_err = None;
+        for _ in 0..=max_retries {
+            match self.write_data(buf) {
+                Ok(n) => return Ok(n),
+                Err(e @ Error::Transfer(_)) => {
+                    last_err = Some(e);
+                    std::thread::sleep(retry_delay);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        // Unwrap is safe: the loop runs at least once, so last_err is always Some
+        // if we reach here.
+        Err(last_err.unwrap())
+    }
+
+    /// Check if the USB device is still connected.
+    ///
+    /// Attempts a lightweight control transfer (reading the latency timer)
+    /// to verify the device is responding. Returns `true` if the device
+    /// responded, `false` if any USB error occurred.
+    pub fn is_connected(&self) -> bool {
+        // Try reading the latency timer — a very lightweight operation
+        self.control_in(SIO_GET_LATENCY_TIMER_REQUEST, 0, self.usb_index, 1)
+            .is_ok()
+    }
+
+    /// Attempt to recover from a USB error by resetting the device.
+    ///
+    /// Performs a USB device reset and re-applies the current baud rate
+    /// and bitbang mode (if enabled).
+    ///
+    /// # Limitations
+    ///
+    /// Only baud rate and bitbang mode are restored. Other device
+    /// configuration — flow control, line properties (data bits, stop bits,
+    /// parity), and latency timer — will be reset to hardware defaults.
+    /// The caller should re-apply those settings after a successful recovery
+    /// if needed.
+    pub fn recover(&mut self) -> Result<()> {
+        self.usb_reset()?;
+        if self.baudrate > 0 {
+            let baud = self.baudrate;
+            self.set_baudrate(baud)?;
+        }
+        if self.bitbang_enabled {
+            // Restore the bitbang mode. We use 0xFF (all outputs) as the
+            // bitmask since the original bitmask is not tracked.
+            let mode = self.bitbang_mode;
+            self.set_bitmode(0xFF, mode)?;
+        }
+        Ok(())
+    }
 }
 
 // ---- std::io trait implementations ----

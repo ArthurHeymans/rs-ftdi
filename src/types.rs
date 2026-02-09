@@ -250,6 +250,17 @@ pub enum FlowControl {
     RtsCts,
     /// Hardware DTR/DSR flow control.
     DtrDsr,
+    /// Software XON/XOFF flow control.
+    ///
+    /// The `xon` and `xoff` fields specify the characters that signal
+    /// the remote end to resume (XON) and pause (XOFF) transmission.
+    /// Common values are `xon = 0x11` (DC1) and `xoff = 0x13` (DC3).
+    XonXoff {
+        /// The XON character (resume transmission). Default: `0x11` (DC1).
+        xon: u8,
+        /// The XOFF character (pause transmission). Default: `0x13` (DC3).
+        xoff: u8,
+    },
 }
 
 /// Decoded modem status from the FTDI chip.
