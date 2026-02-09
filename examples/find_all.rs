@@ -21,9 +21,17 @@ fn main() -> Result<(), ftdi::Error> {
         let devices = ftdi::find_devices(FTDI_VID, *product_id)?;
         for dev in &devices {
             found_any = true;
+            #[cfg(target_os = "linux")]
             println!(
                 "{name}: bus={} addr={} vid={:#06x} pid={:#06x}",
                 dev.busnum(),
+                dev.device_address(),
+                dev.vendor_id(),
+                dev.product_id(),
+            );
+            #[cfg(not(target_os = "linux"))]
+            println!(
+                "{name}: addr={} vid={:#06x} pid={:#06x}",
                 dev.device_address(),
                 dev.vendor_id(),
                 dev.product_id(),

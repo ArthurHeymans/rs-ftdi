@@ -2,7 +2,7 @@
 name = "ftdi"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.79"
 license = "MIT OR Apache-2.0"
 description = "Pure Rust library for communicating with FTDI USB devices, backed by nusb"
 repository = "https://github.com/TODO/ftdi-rs"

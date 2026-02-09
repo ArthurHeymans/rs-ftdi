@@ -81,7 +81,7 @@ const STRING_TIMEOUT: Duration = Duration::from_secs(1);
 ///
 /// let devices = find_devices(FTDI_VID, 0x6001).unwrap();
 /// for dev in &devices {
-///     println!("Found: bus={} addr={}", dev.busnum(), dev.device_address());
+///     println!("Found: vid={:#06x} pid={:#06x}", dev.vendor_id(), dev.product_id());
 /// }
 /// ```
 pub fn find_devices(vendor: u16, product: u16) -> Result<Vec<DeviceInfo>> {

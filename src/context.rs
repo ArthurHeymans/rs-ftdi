@@ -119,6 +119,10 @@ impl FtdiDevice {
     }
 
     /// Open a device by USB bus number and device address.
+    ///
+    /// This function is only available on Linux, where USB bus numbers
+    /// are exposed by the kernel.
+    #[cfg(target_os = "linux")]
     pub fn open_bus_addr(bus: u8, addr: u8, iface: Interface) -> Result<Self> {
         let dev_info = nusb::list_devices()
             .wait()?
