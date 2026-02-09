@@ -164,7 +164,12 @@ impl GpioPin {
 
     /// Write a value to this pin (must already be configured as output).
     #[maybe_async]
-    pub async fn write(&self, ctx: &mut MpsseContext, dev: &mut FtdiDevice, high: bool) -> Result<()> {
+    pub async fn write(
+        &self,
+        ctx: &mut MpsseContext,
+        dev: &mut FtdiDevice,
+        high: bool,
+    ) -> Result<()> {
         match self.bank {
             GpioBank::Low => {
                 let dir = ctx.gpio_low_dir();

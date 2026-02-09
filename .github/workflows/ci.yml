@@ -65,11 +65,11 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   msrv:
-    name: MSRV (1.79)
+    name: MSRV (1.80)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.79.0
+      - uses: dtolnay/rust-toolchain@1.80.0
       - run: sudo apt-get update && sudo apt-get install -y libudev-dev
       - run: cargo check
 

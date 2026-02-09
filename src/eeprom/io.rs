@@ -19,7 +19,9 @@ impl FtdiDevice {
     #[maybe_async]
     pub async fn read_eeprom(&mut self) -> Result<()> {
         for i in 0..(FTDI_MAX_EEPROM_SIZE / 2) {
-            let data = self.control_in(SIO_READ_EEPROM_REQUEST, 0, i as u16, 2).await?;
+            let data = self
+                .control_in(SIO_READ_EEPROM_REQUEST, 0, i as u16, 2)
+                .await?;
             if data.len() < 2 {
                 return Err(Error::Eeprom("EEPROM read failed: short transfer".into()));
             }
@@ -85,7 +87,8 @@ impl FtdiDevice {
 
             let val = (self.eeprom.buf[i * 2] as u16) | ((self.eeprom.buf[i * 2 + 1] as u16) << 8);
 
-            self.control_out(SIO_WRITE_EEPROM_REQUEST, val, i as u16).await?;
+            self.control_out(SIO_WRITE_EEPROM_REQUEST, val, i as u16)
+                .await?;
         }
 
         Ok(())
@@ -109,7 +112,8 @@ impl FtdiDevice {
         self.control_out(SIO_ERASE_EEPROM_REQUEST, 0, 0).await?;
 
         // Detect EEPROM chip type via wraparound test
-        self.control_out(SIO_WRITE_EEPROM_REQUEST, MAGIC, 0xC0).await?;
+        self.control_out(SIO_WRITE_EEPROM_REQUEST, MAGIC, 0xC0)
+            .await?;
 
         let val = self.read_eeprom_location(0x00).await?;
         if val == MAGIC {
@@ -154,7 +158,8 @@ impl FtdiDevice {
                 "cannot write to checksum-protected area below 0x80",
             ));
         }
-        self.control_out(SIO_WRITE_EEPROM_REQUEST, value, addr).await
+        self.control_out(SIO_WRITE_EEPROM_REQUEST, value, addr)
+            .await
     }
 
     /// Read the FTDIChip-ID from R-type devices.

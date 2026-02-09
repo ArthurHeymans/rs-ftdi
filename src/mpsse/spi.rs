@@ -284,7 +284,12 @@ impl SpiDevice {
     /// CS is automatically asserted before and deasserted after the transfer.
     /// Large transfers (>65536 bytes) are automatically chunked.
     #[maybe_async]
-    pub async fn write(&self, _ctx: &mut MpsseContext, dev: &mut FtdiDevice, tx: &[u8]) -> Result<()> {
+    pub async fn write(
+        &self,
+        _ctx: &mut MpsseContext,
+        dev: &mut FtdiDevice,
+        tx: &[u8],
+    ) -> Result<()> {
         if tx.is_empty() {
             return Ok(());
         }

@@ -6,9 +6,9 @@
 
 use core::time::Duration;
 
+use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
 #[cfg(feature = "is_sync")]
 use nusb::MaybeFuture;
-use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
 
 use maybe_async::maybe_async;
 
@@ -476,7 +476,8 @@ impl FtdiDevice {
     /// is invalidated.
     #[maybe_async]
     pub async fn usb_reset(&mut self) -> Result<()> {
-        self.control_out(SIO_RESET_REQUEST, SIO_RESET_SIO, self.usb_index).await?;
+        self.control_out(SIO_RESET_REQUEST, SIO_RESET_SIO, self.usb_index)
+            .await?;
         self.readbuffer_offset = 0;
         self.readbuffer_remaining = 0;
         Ok(())
@@ -488,7 +489,8 @@ impl FtdiDevice {
     /// device toward the host) and the internal software read buffer.
     #[maybe_async]
     pub async fn flush_rx(&mut self) -> Result<()> {
-        self.control_out(SIO_RESET_REQUEST, SIO_TCIFLUSH, self.usb_index).await?;
+        self.control_out(SIO_RESET_REQUEST, SIO_TCIFLUSH, self.usb_index)
+            .await?;
         self.readbuffer_offset = 0;
         self.readbuffer_remaining = 0;
         Ok(())
@@ -500,7 +502,8 @@ impl FtdiDevice {
     /// toward the serial device).
     #[maybe_async]
     pub async fn flush_tx(&mut self) -> Result<()> {
-        self.control_out(SIO_RESET_REQUEST, SIO_TCOFLUSH, self.usb_index).await?;
+        self.control_out(SIO_RESET_REQUEST, SIO_TCOFLUSH, self.usb_index)
+            .await?;
         Ok(())
     }
 
@@ -551,7 +554,8 @@ impl FtdiDevice {
             });
         }
 
-        self.control_out(SIO_SET_BAUDRATE_REQUEST, result.value, result.index).await?;
+        self.control_out(SIO_SET_BAUDRATE_REQUEST, result.value, result.index)
+            .await?;
         self.baudrate = baudrate;
         Ok(())
     }
@@ -564,7 +568,8 @@ impl FtdiDevice {
         stop_bits: StopBits,
         parity: Parity,
     ) -> Result<()> {
-        self.set_line_property_with_break(bits, stop_bits, parity, BreakType::Off).await
+        self.set_line_property_with_break(bits, stop_bits, parity, BreakType::Off)
+            .await
     }
 
     /// Set the serial line properties including break control.
@@ -581,7 +586,8 @@ impl FtdiDevice {
             | (stop_bits.wire_value() << 11)
             | (break_type.wire_value() << 14);
 
-        self.control_out(SIO_SET_DATA_REQUEST, value, self.usb_index).await
+        self.control_out(SIO_SET_DATA_REQUEST, value, self.usb_index)
+            .await
     }
 
     /// Set the read timeout for USB transfers.
@@ -612,28 +618,38 @@ impl FtdiDevice {
     #[maybe_async]
     pub async fn set_flow_control(&self, flow: FlowControl) -> Result<()> {
         match flow {
-            FlowControl::Disabled => self.control_out(
-                SIO_SET_FLOW_CTRL_REQUEST,
-                0,
-                SIO_DISABLE_FLOW_CTRL | self.usb_index,
-            ).await,
-            FlowControl::RtsCts => self.control_out(
-                SIO_SET_FLOW_CTRL_REQUEST,
-                0,
-                SIO_RTS_CTS_HS | self.usb_index,
-            ).await,
-            FlowControl::DtrDsr => self.control_out(
-                SIO_SET_FLOW_CTRL_REQUEST,
-                0,
-                SIO_DTR_DSR_HS | self.usb_index,
-            ).await,
+            FlowControl::Disabled => {
+                self.control_out(
+                    SIO_SET_FLOW_CTRL_REQUEST,
+                    0,
+                    SIO_DISABLE_FLOW_CTRL | self.usb_index,
+                )
+                .await
+            }
+            FlowControl::RtsCts => {
+                self.control_out(
+                    SIO_SET_FLOW_CTRL_REQUEST,
+                    0,
+                    SIO_RTS_CTS_HS | self.usb_index,
+                )
+                .await
+            }
+            FlowControl::DtrDsr => {
+                self.control_out(
+                    SIO_SET_FLOW_CTRL_REQUEST,
+                    0,
+                    SIO_DTR_DSR_HS | self.usb_index,
+                )
+                .await
+            }
             FlowControl::XonXoff { xon, xoff } => {
                 let xonxoff = (xon as u16) | ((xoff as u16) << 8);
                 self.control_out(
                     SIO_SET_FLOW_CTRL_REQUEST,
                     xonxoff,
                     SIO_XON_XOFF_HS | self.usb_index,
-                ).await
+                )
+                .await
             }
         }
     }
@@ -641,7 +657,8 @@ impl FtdiDevice {
     /// Set XON/XOFF software flow control with custom characters.
     #[maybe_async]
     pub async fn set_flow_control_xonxoff(&self, xon: u8, xoff: u8) -> Result<()> {
-        self.set_flow_control(FlowControl::XonXoff { xon, xoff }).await
+        self.set_flow_control(FlowControl::XonXoff { xon, xoff })
+            .await
     }
 
     /// Set the DTR (Data Terminal Ready) line state.
@@ -652,7 +669,8 @@ impl FtdiDevice {
         } else {
             SIO_SET_DTR_LOW
         };
-        self.control_out(SIO_SET_MODEM_CTRL_REQUEST, val, self.usb_index).await
+        self.control_out(SIO_SET_MODEM_CTRL_REQUEST, val, self.usb_index)
+            .await
     }
 
     /// Set the RTS (Request To Send) line state.
@@ -663,7 +681,8 @@ impl FtdiDevice {
         } else {
             SIO_SET_RTS_LOW
         };
-        self.control_out(SIO_SET_MODEM_CTRL_REQUEST, val, self.usb_index).await
+        self.control_out(SIO_SET_MODEM_CTRL_REQUEST, val, self.usb_index)
+            .await
     }
 
     /// Set both DTR and RTS lines in a single USB transfer.
@@ -679,27 +698,32 @@ impl FtdiDevice {
         } else {
             SIO_SET_RTS_LOW
         };
-        self.control_out(SIO_SET_MODEM_CTRL_REQUEST, val, self.usb_index).await
+        self.control_out(SIO_SET_MODEM_CTRL_REQUEST, val, self.usb_index)
+            .await
     }
 
     /// Set the special event character.
     #[maybe_async]
     pub async fn set_event_char(&self, ch: u8, enable: bool) -> Result<()> {
         let val = (ch as u16) | if enable { 1 << 8 } else { 0 };
-        self.control_out(SIO_SET_EVENT_CHAR_REQUEST, val, self.usb_index).await
+        self.control_out(SIO_SET_EVENT_CHAR_REQUEST, val, self.usb_index)
+            .await
     }
 
     /// Set the error character.
     #[maybe_async]
     pub async fn set_error_char(&self, ch: u8, enable: bool) -> Result<()> {
         let val = (ch as u16) | if enable { 1 << 8 } else { 0 };
-        self.control_out(SIO_SET_ERROR_CHAR_REQUEST, val, self.usb_index).await
+        self.control_out(SIO_SET_ERROR_CHAR_REQUEST, val, self.usb_index)
+            .await
     }
 
     /// Poll the modem status.
     #[maybe_async]
     pub async fn poll_modem_status(&self) -> Result<ModemStatus> {
-        let data = self.control_in(SIO_POLL_MODEM_STATUS_REQUEST, 0, self.usb_index, 2).await?;
+        let data = self
+            .control_in(SIO_POLL_MODEM_STATUS_REQUEST, 0, self.usb_index, 2)
+            .await?;
         if data.len() < 2 {
             return Err(Error::DeviceUnavailable);
         }
@@ -721,13 +745,16 @@ impl FtdiDevice {
             SIO_SET_LATENCY_TIMER_REQUEST,
             latency_ms as u16,
             self.usb_index,
-        ).await
+        )
+        .await
     }
 
     /// Get the current latency timer value in milliseconds.
     #[maybe_async]
     pub async fn latency_timer(&self) -> Result<u8> {
-        let data = self.control_in(SIO_GET_LATENCY_TIMER_REQUEST, 0, self.usb_index, 1).await?;
+        let data = self
+            .control_in(SIO_GET_LATENCY_TIMER_REQUEST, 0, self.usb_index, 1)
+            .await?;
         if data.is_empty() {
             return Err(Error::DeviceUnavailable);
         }
@@ -742,7 +769,8 @@ impl FtdiDevice {
     #[maybe_async]
     pub async fn set_bitmode(&mut self, bitmask: u8, mode: BitMode) -> Result<()> {
         let val = (bitmask as u16) | ((mode.wire_value() as u16) << 8);
-        self.control_out(SIO_SET_BITMODE_REQUEST, val, self.usb_index).await?;
+        self.control_out(SIO_SET_BITMODE_REQUEST, val, self.usb_index)
+            .await?;
 
         self.bitbang_mode = mode;
         self.bitbang_enabled = mode != BitMode::Reset;
@@ -758,7 +786,9 @@ impl FtdiDevice {
     /// Read the current pin states directly, bypassing the read buffer.
     #[maybe_async]
     pub async fn read_pins(&self) -> Result<u8> {
-        let data = self.control_in(SIO_READ_PINS_REQUEST, 0, self.usb_index, 1).await?;
+        let data = self
+            .control_in(SIO_READ_PINS_REQUEST, 0, self.usb_index, 1)
+            .await?;
         if data.is_empty() {
             return Err(Error::DeviceUnavailable);
         }
@@ -1098,8 +1128,7 @@ mod tests {
     fn strip_modem_status_multiple_packets() {
         let packet_size = 8;
         let mut data = vec![
-            0xAA, 0xBB, 2, 3, 4, 5, 6, 7,
-            0xCC, 0xDD, 10, 11, 12, 13, 14, 15,
+            0xAA, 0xBB, 2, 3, 4, 5, 6, 7, 0xCC, 0xDD, 10, 11, 12, 13, 14, 15,
         ];
 
         let stripped = strip_modem_status(&mut data, packet_size);

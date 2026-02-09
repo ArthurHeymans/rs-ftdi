@@ -75,7 +75,11 @@ impl MpsseContext {
             return Err(Error::InvalidArgument("clock frequency must be > 0"));
         }
 
-        let max_freq = if self.is_h_type { 30_000_000 } else { 6_000_000 };
+        let max_freq = if self.is_h_type {
+            30_000_000
+        } else {
+            6_000_000
+        };
         if clock_hz > max_freq {
             return Err(Error::InvalidArgument(
                 "clock frequency exceeds maximum for this chip",
@@ -145,15 +149,22 @@ impl MpsseContext {
     }
 
     #[maybe_async]
-    pub async fn set_gpio_low(&mut self, dev: &mut FtdiDevice, value: u8, direction: u8) -> Result<()> {
+    pub async fn set_gpio_low(
+        &mut self,
+        dev: &mut FtdiDevice,
+        value: u8,
+        direction: u8,
+    ) -> Result<()> {
         self.gpio_low_value = value;
         self.gpio_low_dir = direction;
-        dev.write_all(&[mpsse::SET_BITS_LOW, value, direction]).await
+        dev.write_all(&[mpsse::SET_BITS_LOW, value, direction])
+            .await
     }
 
     #[maybe_async]
     pub async fn get_gpio_low(&self, dev: &mut FtdiDevice) -> Result<u8> {
-        dev.write_all(&[mpsse::GET_BITS_LOW, mpsse::SEND_IMMEDIATE]).await?;
+        dev.write_all(&[mpsse::GET_BITS_LOW, mpsse::SEND_IMMEDIATE])
+            .await?;
         let mut buf = [0u8; 1];
         let n = dev.read_data(&mut buf).await?;
         if n == 0 {
@@ -163,15 +174,22 @@ impl MpsseContext {
     }
 
     #[maybe_async]
-    pub async fn set_gpio_high(&mut self, dev: &mut FtdiDevice, value: u8, direction: u8) -> Result<()> {
+    pub async fn set_gpio_high(
+        &mut self,
+        dev: &mut FtdiDevice,
+        value: u8,
+        direction: u8,
+    ) -> Result<()> {
         self.gpio_high_value = value;
         self.gpio_high_dir = direction;
-        dev.write_all(&[mpsse::SET_BITS_HIGH, value, direction]).await
+        dev.write_all(&[mpsse::SET_BITS_HIGH, value, direction])
+            .await
     }
 
     #[maybe_async]
     pub async fn get_gpio_high(&self, dev: &mut FtdiDevice) -> Result<u8> {
-        dev.write_all(&[mpsse::GET_BITS_HIGH, mpsse::SEND_IMMEDIATE]).await?;
+        dev.write_all(&[mpsse::GET_BITS_HIGH, mpsse::SEND_IMMEDIATE])
+            .await?;
         let mut buf = [0u8; 1];
         let n = dev.read_data(&mut buf).await?;
         if n == 0 {
