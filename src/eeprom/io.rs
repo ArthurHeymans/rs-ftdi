@@ -4,6 +4,7 @@ use crate::constants::*;
 use crate::context::FtdiDevice;
 use crate::error::{Error, Result};
 use crate::types::ChipType;
+use maybe_async::maybe_async;
 
 const MAGIC: u16 = 0x55AA;
 
@@ -15,9 +16,10 @@ impl FtdiDevice {
     ///
     /// After reading, the EEPROM size is auto-detected by comparing halves
     /// of the buffer.
-    pub fn read_eeprom(&mut self) -> Result<()> {
+    #[maybe_async]
+    pub async fn read_eeprom(&mut self) -> Result<()> {
         for i in 0..(FTDI_MAX_EEPROM_SIZE / 2) {
-            let data = self.control_in(SIO_READ_EEPROM_REQUEST, 0, i as u16, 2)?;
+            let data = self.control_in(SIO_READ_EEPROM_REQUEST, 0, i as u16, 2).await?;
             if data.len() < 2 {
                 return Err(Error::Eeprom("EEPROM read failed: short transfer".into()));
             }
@@ -53,7 +55,8 @@ impl FtdiDevice {
     /// The EEPROM must have been initialized (via `eeprom_build` or manual
     /// setup). Performs the same initialization sequence observed from FTDI's
     /// MProg tool.
-    pub fn write_eeprom(&mut self) -> Result<()> {
+    #[maybe_async]
+    pub async fn write_eeprom(&mut self) -> Result<()> {
         if !self.eeprom.initialized_for_connected_device {
             return Err(Error::Eeprom(
                 "EEPROM not initialized for the connected device".into(),
@@ -67,9 +70,9 @@ impl FtdiDevice {
         let chip_type = self.chip_type();
 
         // Initialization sequence (from MProg traces)
-        self.usb_reset()?;
-        let _ = self.poll_modem_status();
-        let _ = self.set_latency_timer(0x77);
+        self.usb_reset().await?;
+        let _ = self.poll_modem_status().await;
+        let _ = self.set_latency_timer(0x77).await;
 
         for i in 0..eeprom_size / 2 {
             // Skip reserved area on FT230X
@@ -82,7 +85,7 @@ impl FtdiDevice {
 
             let val = (self.eeprom.buf[i * 2] as u16) | ((self.eeprom.buf[i * 2 + 1] as u16) << 8);
 
-            self.control_out(SIO_WRITE_EEPROM_REQUEST, val, i as u16)?;
+            self.control_out(SIO_WRITE_EEPROM_REQUEST, val, i as u16).await?;
         }
 
         Ok(())
@@ -94,7 +97,8 @@ impl FtdiDevice {
     /// word wraparound test (93x46 vs 93x56 vs 93x66).
     ///
     /// Not supported on FT232R/FT245R (internal EEPROM) or FT230X (MTP).
-    pub fn erase_eeprom(&mut self) -> Result<()> {
+    #[maybe_async]
+    pub async fn erase_eeprom(&mut self) -> Result<()> {
         let chip_type = self.chip_type();
 
         if chip_type == ChipType::Ft232R || chip_type == ChipType::Ft230X {
@@ -102,20 +106,20 @@ impl FtdiDevice {
             return Ok(());
         }
 
-        self.control_out(SIO_ERASE_EEPROM_REQUEST, 0, 0)?;
+        self.control_out(SIO_ERASE_EEPROM_REQUEST, 0, 0).await?;
 
         // Detect EEPROM chip type via wraparound test
-        self.control_out(SIO_WRITE_EEPROM_REQUEST, MAGIC, 0xC0)?;
+        self.control_out(SIO_WRITE_EEPROM_REQUEST, MAGIC, 0xC0).await?;
 
-        let val = self.read_eeprom_location(0x00)?;
+        let val = self.read_eeprom_location(0x00).await?;
         if val == MAGIC {
             self.eeprom.chip = 0x46; // 93x46
         } else {
-            let val = self.read_eeprom_location(0x40)?;
+            let val = self.read_eeprom_location(0x40).await?;
             if val == MAGIC {
                 self.eeprom.chip = 0x56; // 93x56
             } else {
-                let val = self.read_eeprom_location(0xC0)?;
+                let val = self.read_eeprom_location(0xC0).await?;
                 if val == MAGIC {
                     self.eeprom.chip = 0x66; // 93x66
                 } else {
@@ -125,14 +129,15 @@ impl FtdiDevice {
         }
 
         // Erase again to clean up the magic word
-        self.control_out(SIO_ERASE_EEPROM_REQUEST, 0, 0)?;
+        self.control_out(SIO_ERASE_EEPROM_REQUEST, 0, 0).await?;
 
         Ok(())
     }
 
     /// Read a single 16-bit EEPROM location.
-    pub fn read_eeprom_location(&self, addr: u16) -> Result<u16> {
-        let data = self.control_in(SIO_READ_EEPROM_REQUEST, 0, addr, 2)?;
+    #[maybe_async]
+    pub async fn read_eeprom_location(&self, addr: u16) -> Result<u16> {
+        let data = self.control_in(SIO_READ_EEPROM_REQUEST, 0, addr, 2).await?;
         if data.len() < 2 {
             return Err(Error::Eeprom("EEPROM read location failed".into()));
         }
@@ -142,21 +147,23 @@ impl FtdiDevice {
     /// Write a single 16-bit EEPROM location.
     ///
     /// Only valid for addresses >= 0x80 on 93x66 EEPROMs.
-    pub fn write_eeprom_location(&self, addr: u16, value: u16) -> Result<()> {
+    #[maybe_async]
+    pub async fn write_eeprom_location(&self, addr: u16, value: u16) -> Result<()> {
         if addr < 0x80 {
             return Err(Error::InvalidArgument(
                 "cannot write to checksum-protected area below 0x80",
             ));
         }
-        self.control_out(SIO_WRITE_EEPROM_REQUEST, value, addr)
+        self.control_out(SIO_WRITE_EEPROM_REQUEST, value, addr).await
     }
 
     /// Read the FTDIChip-ID from R-type devices.
     ///
     /// The chip ID is a unique identifier burned into the silicon.
-    pub fn read_chipid(&self) -> Result<u32> {
-        let a_data = self.control_in(SIO_READ_EEPROM_REQUEST, 0, 0x43, 2)?;
-        let b_data = self.control_in(SIO_READ_EEPROM_REQUEST, 0, 0x44, 2)?;
+    #[maybe_async]
+    pub async fn read_chipid(&self) -> Result<u32> {
+        let a_data = self.control_in(SIO_READ_EEPROM_REQUEST, 0, 0x43, 2).await?;
+        let b_data = self.control_in(SIO_READ_EEPROM_REQUEST, 0, 0x44, 2).await?;
 
         if a_data.len() < 2 || b_data.len() < 2 {
             return Err(Error::Eeprom("read of FTDIChip-ID failed".into()));
@@ -187,14 +194,15 @@ impl FtdiDevice {
     /// For FT230X devices, this reads the factory configuration data
     /// (addresses 0x40-0x4F) from the device to include in the checksum,
     /// matching the behavior of `ftdi_eeprom_build()` in libftdi.
-    pub fn eeprom_build(&mut self) -> Result<usize> {
+    #[maybe_async]
+    pub async fn eeprom_build(&mut self) -> Result<usize> {
         let chip_type = self.chip_type();
 
         // For FT230X, read factory data area (0x40-0x4F) from the device
         // so it's included in the checksum calculation.
         if chip_type == ChipType::Ft230X {
             for i in 0x40..0x50u16 {
-                if let Ok(data) = self.control_in(SIO_READ_EEPROM_REQUEST, 0, i, 2) {
+                if let Ok(data) = self.control_in(SIO_READ_EEPROM_REQUEST, 0, i, 2).await {
                     if data.len() >= 2 {
                         self.eeprom.buf[(i as usize) * 2] = data[0];
                         self.eeprom.buf[(i as usize) * 2 + 1] = data[1];

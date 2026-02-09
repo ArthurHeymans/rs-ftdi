@@ -86,8 +86,12 @@ pub enum Error {
     /// This is distinct from `Transfer` errors — it indicates that the
     /// device did not respond within the configured timeout period.
     #[error("operation timed out after {0:?}")]
-    Timeout(std::time::Duration),
+    Timeout(core::time::Duration),
+
+    /// A device open operation failed (e.g., WebUSB request denied).
+    #[error("device open failed: {0}")]
+    OpenFailed(String),
 }
 
 /// A specialized `Result` type for FTDI operations.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, Error>;

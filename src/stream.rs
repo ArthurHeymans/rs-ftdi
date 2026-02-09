@@ -4,6 +4,8 @@
 //! acquisition from FTDI devices in synchronous FIFO mode. It is
 //! only supported on FT2232H and FT232H chips.
 //!
+//! This module is only available with the `std` feature (native builds).
+//!
 //! Unlike the regular [`read_data`](crate::FtdiDevice::read_data) method,
 //! streaming uses multiple concurrent USB transfers to maximize throughput.
 
